@@ -1,0 +1,9 @@
+{
+  "depot": { "lat": 6.9370, "lng": 79.8448 },
+  "jobs": [
+    { "id": "a", "address": "23 Chatham Street, Colombo 01", "position": { "lat": 6.9348, "lng": 79.8434 } },
+    { "id": "b", "address": "475 Union Place, Colombo 02",  "position": { "lat": 6.9175, "lng": 79.8580 } },
+    { "id": "c", "address": "14 Marine Drive, Colombo 03",  "position": { "lat": 6.9080, "lng": 79.8490 } }
+  ],
+  "optimize": true
+}
