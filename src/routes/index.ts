@@ -1,3 +1,4 @@
+import {adminProofRouter} from "./delivery-proof.routes.js";
 import { driverMobileRouter } from "./driver-mobile.routes.js";
 import { Router } from "express";
 import { healthRouter } from "./health.routes.js";
@@ -32,3 +33,5 @@ apiRouter.use(stopsRouter);
 apiRouter.use(groupRouter);
 apiRouter.use(settingsRouter);
 apiRouter.use(keyRouter);
+
+apiRouter.use(adminProofRouter);

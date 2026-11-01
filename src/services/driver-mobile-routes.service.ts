@@ -35,6 +35,8 @@ export async function completeDriverStop(driverId:string,planId:string,seq:numbe
   const index=row.stop_arrivals.findIndex(s=>s.seq===seq&&s.stopId===stopId&&s.stopId!=='__DEPOT__');
   if(index<0||!row.job_ids.includes(stopId))throw new ApiError(404,'STOP_NOT_FOUND','This order is not on the assigned route.');
   const stop=row.stop_arrivals[index];
+  if(/^STP-J/.test(stopId))throw new ApiError(409,'PROOF_REQUIRED','Scan every parcel, capture delivery photos and sign before completing this job.');
+
   if(stop.status!=='Completed'){
    if(row.route_version!==version)throw new ApiError(409,'ROUTE_CHANGED','The route changed. Reload the order before completing it.');
    if(stop.status!=='Pending')throw new ApiError(409,'STOP_NOT_PENDING','Only a pending delivery or collection can be completed.');
