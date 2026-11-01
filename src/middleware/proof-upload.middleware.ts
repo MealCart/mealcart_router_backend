@@ -1,7 +1,7 @@
 import multer from 'multer';
 import type {Request,Response,NextFunction} from 'express';
 import {ApiError} from '../types/api.types.js';
-const upload=multer({storage:multer.memoryStorage(),limits:{fileSize:8*1024*1024,files:6,fields:5,fieldSize:256000,parts:11}}).array('photos',6);
+const upload=multer({storage:multer.memoryStorage(),limits:{fileSize:8*1024*1024,files:6,fields:6,fieldSize:256000,parts:12}}).array('photos',6);
 let active=0;
 export function proofUpload(req:Request,res:Response,next:NextFunction){
  if(active>=2)return next(new ApiError(503,'UPLOAD_BUSY','The upload server is busy. Keep your photos and retry shortly.'));

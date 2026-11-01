@@ -5,7 +5,10 @@ export const signatureSchema=z.object({strokes:z.array(z.array(point).min(2).max
  if(count<8||count>5000||length<.12)ctx.addIssue({code:z.ZodIssueCode.custom,message:'Draw a complete driver signature.'});
 });
 export const scanSchema=z.object({stopId:z.string().min(1).max(100),doNumber:z.string().min(1).max(200),barcode:z.string().trim().min(1).max(256)}).strict();
-export const proofSchema=z.object({stopId:z.string().min(1).max(100),doNumber:z.string().min(1).max(200),version:z.coerce.number().int().positive(),requestId:z.string().uuid(),signature:z.string().max(256000).transform((value,ctx)=>{try{return JSON.parse(value);}catch{ctx.addIssue({code:z.ZodIssueCode.custom,message:'Invalid signature data.'});return z.NEVER;}}).pipe(signatureSchema)}).strict();
+export const offlineIdentitySchema=z.object({planCreatedAt:z.string().datetime({precision:6}),completedAt:z.string().datetime(),requestId:z.string().uuid()}).strict();
+export const offlineEvidenceSchema=z.object({planCreatedAt:z.string().datetime({precision:6}),completedAt:z.string().datetime(),expectedBarcodes:z.array(z.string().min(1).max(256)).min(1).max(500),scans:z.array(z.object({barcode:z.string().min(1).max(256),scannedAt:z.string().datetime()}).strict()).min(1).max(500)}).strict();
+const offlineField=z.string().max(256000).transform((value,ctx)=>{try{return JSON.parse(value);}catch{ctx.addIssue({code:z.ZodIssueCode.custom,message:'Invalid offline evidence.'});return z.NEVER;}}).pipe(offlineEvidenceSchema).optional();
+export const proofSchema=z.object({stopId:z.string().min(1).max(100),doNumber:z.string().min(1).max(200),version:z.coerce.number().int().positive(),requestId:z.string().uuid(),signature:z.string().max(256000).transform((value,ctx)=>{try{return JSON.parse(value);}catch{ctx.addIssue({code:z.ZodIssueCode.custom,message:'Invalid signature data.'});return z.NEVER;}}).pipe(signatureSchema),offline:offlineField}).strict();
 export type ProofInput=z.infer<typeof proofSchema>;
 export function barcodeKey(value:string){return value.trim().replace(/^#/,'');}
 export function expectedBarcodes(value:unknown):string[]{

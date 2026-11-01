@@ -1,3 +1,4 @@
+import {offlineIdentitySchema} from "../validators/delivery-proof.validator.js";
 import {deliveryProofRouter} from "./delivery-proof.routes.js";
 import { Router } from 'express';
 import { z } from 'zod';
@@ -30,9 +31,9 @@ driverMobileRouter.get('/routes',asyncHandler(async(req,res)=>{
  res.json({ok:true,data:await listDriverRoutes(res.locals.driver.id,date)});
 }));
 driverMobileRouter.get('/routes/:id',asyncHandler(async(req,res)=>{res.json({ok:true,data:await getDriverRoute(res.locals.driver.id,req.params.id)});}));
-const completeSchema=z.object({stopId:z.string().min(1).max(100),version:z.number().int().positive()}).strict();
+const completeSchema=z.object({stopId:z.string().min(1).max(100),version:z.number().int().positive(),offline:offlineIdentitySchema.optional()}).strict();
 driverMobileRouter.post('/routes/:id/stops/:seq/complete',validateBody(completeSchema),asyncHandler(async(req,res)=>{
  const seq=Number(req.params.seq);if(!Number.isInteger(seq)||seq<1)throw new ApiError(400,'BAD_SEQ','Invalid stop sequence.');
- res.json({ok:true,data:await completeDriverStop(res.locals.driver.id,req.params.id,seq,req.body.stopId,req.body.version)});
+ res.json({ok:true,data:await completeDriverStop(res.locals.driver.id,req.params.id,seq,req.body.stopId,req.body.version,req.body.offline)});
 }));
 driverMobileRouter.use((_req,_res,next)=>next(new ApiError(404,'NOT_FOUND','Driver endpoint not found.')));

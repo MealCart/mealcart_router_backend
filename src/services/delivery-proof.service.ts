@@ -18,13 +18,13 @@ function codes(job:any){try{return expectedBarcodes(job.barcodes);}catch(err){th
 async function scans(c:PoolClient,plan:any,seq:number,jobId:number,driverId:string){return(await c.query('SELECT barcode,scanned_at,driver_id FROM mealcart_parcel_scans WHERE plan_id=$1 AND plan_created_at=$2 AND stop_seq=$3 AND job_id=$4 AND driver_id=$5',[plan.public_id,plan.created_at,seq,jobId,driverId])).rows;}
 export async function parcelState(driverId:string,planId:string,seq:number){
  return transaction(async c=>{const{plan,stop,job}=await context(c,driverId,planId,seq,true);
- const completion=(await c.query('SELECT photos,signature_url,completed_at FROM mealcart_delivery_completions WHERE plan_id=$1 AND plan_created_at=$2 AND stop_seq=$3',[planId,plan.created_at,seq])).rows[0];
+ const completion=(await c.query('SELECT id,photos,signature_url,completed_at FROM mealcart_delivery_completions WHERE plan_id=$1 AND plan_created_at=$2 AND stop_seq=$3',[planId,plan.created_at,seq])).rows[0];
  let expected:string[]=[],configurationError='';try{expected=codes(job);}catch(err){configurationError=(err as Error).message;}
  const recorded=await scans(c,plan,seq,job.id,driverId);const known=new Map(recorded.map(r=>[r.barcode,r]));
- return{stopId:stop.stopId,doNumber:String(job.do_number??''),version:plan.route_version,status:stop.status,configurationError,
+ return{stopId:stop.stopId,doNumber:String(job.do_number??''),planCreatedAt:plan.created_at,version:plan.route_version,status:stop.status,configurationError,
  barcodes:expected.map(barcode=>({barcode,status:known.has(barcode)?'Completed':'Pending',scannedAt:known.get(barcode)?.scanned_at??null})),
  scannedCount:expected.filter(code=>known.has(code)).length,totalCount:expected.length,
- proof:completion?{photos:completion.photos,signatureUrl:completion.signature_url,completedAt:completion.completed_at}:null};});
+ proof:completion?{completionId:completion.id,photos:completion.photos,signatureUrl:completion.signature_url,completedAt:completion.completed_at}:null};});
 }
 export async function scanParcel(driverId:string,planId:string,seq:number,input:{stopId:string;doNumber:string;barcode:string}){
  await transaction(async c=>{const{plan,stop,job}=await context(c,driverId,planId,seq,true);
@@ -40,17 +40,33 @@ export async function completeWithProof(driverId:string,planId:string,seq:number
  try{
   await c.query('BEGIN');const{plan,stop,index,job}=await context(c,driverId,planId,seq,true);
   if(stop.stopId!==input.stopId||String(job.do_number??'')!==input.doNumber)throw new ApiError(409,'ORDER_CHANGED','The assigned order changed. Reload it.');
+  if(input.offline && input.offline.planCreatedAt!==plan.created_at)throw new ApiError(409,'OFFLINE_ROUTE_REPLACED','The saved route was deleted or replaced. Your offline proof needs office review.');
   const receipt=(await c.query(`SELECT *,to_char(plan_created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS plan_created_at FROM mealcart_delivery_completions WHERE id=$1`,[input.requestId])).rows[0];
   if(receipt){if(receipt.driver_id!==driverId||receipt.plan_id!==planId||receipt.stop_seq!==seq||receipt.job_id!==job.id||String(receipt.plan_created_at)!==String(plan.created_at))throw new ApiError(409,'REQUEST_CONFLICT','This completion request belongs to another order.');await c.query('COMMIT');committed=true;return parcelState(driverId,planId,seq);}
   if(stop.status!=='Pending'||job.status==='completed')throw new ApiError(409,'ALREADY_COMPLETED','This job or stop is already completed or no longer pending. Reload its status.');
-  if(plan.route_version!==input.version)throw new ApiError(409,'ROUTE_CHANGED','The route changed. Reload before completing this order.');
-  const expected=codes(job),recorded=await scans(c,plan,seq,job.id,driverId),set=new Set(recorded.map(r=>r.barcode));
+  if(!input.offline && plan.route_version!==input.version)throw new ApiError(409,'ROUTE_CHANGED','The route changed. Reload before completing this order.');
+  const expected=codes(job);
+  if(input.offline){
+   const offline=input.offline;
+   const saved=offline.expectedBarcodes.map(barcodeKey).sort(),current=expected.map(barcodeKey).sort();
+   if(JSON.stringify(saved)!==JSON.stringify(current))throw new ApiError(409,'OFFLINE_PARCELS_CHANGED','The office changed the parcel list. Keep this evidence for office review.');
+   const recordedAt=Date.parse(offline.completedAt);
+   if(recordedAt>Date.now()+300000||recordedAt<Date.parse(plan.created_at)-86400000)throw new ApiError(409,'OFFLINE_CLOCK_INVALID','The device completion time is outside this route. Check your phone clock; evidence is retained.');
+   const seen=new Set<string>();
+   for(const scan of offline.scans){
+    const key=barcodeKey(scan.barcode),barcode=expected.find(code=>barcodeKey(code)===key),at=Date.parse(scan.scannedAt);
+    if(!barcode||seen.has(key)||at>recordedAt+300000||at<Date.parse(plan.created_at)-86400000)throw new ApiError(409,'OFFLINE_SCANS_INVALID','Offline scan evidence does not match the saved job.');
+    seen.add(key);
+    await c.query(`INSERT INTO mealcart_parcel_scans(plan_id,plan_created_at,stop_seq,job_id,do_number,barcode,raw_barcode,driver_id,scanned_at) VALUES($1,$2,$3,$4,$5,$6,$6,$7,$8::timestamptz) ON CONFLICT(plan_id,plan_created_at,stop_seq,barcode,driver_id) DO NOTHING`,[planId,plan.created_at,seq,job.id,String(job.do_number),barcode,driverId,scan.scannedAt]);
+   }
+  }
+  const recorded=await scans(c,plan,seq,job.id,driverId),set=new Set(recorded.map(r=>r.barcode));
   if(expected.some(code=>!set.has(code)))throw new ApiError(409,'PARCELS_MISSING',`Scan every saved parcel first (${expected.filter(code=>set.has(code)).length}/${expected.length}).`);
   files=await saveEvidence(photos,input.signature);const links=files.filter(f=>f.kind==='photo').map(f=>f.url),signature=files.find(f=>f.kind==='signature')!.url;
   const receiptRow=(await c.query(`INSERT INTO mealcart_delivery_completions(id,plan_id,plan_created_at,stop_seq,job_id,do_number,driver_id,photos,signature_url,expected_barcodes) VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10::jsonb) RETURNING completed_at`,[input.requestId,planId,plan.created_at,seq,job.id,String(job.do_number),driverId,JSON.stringify(links),signature,JSON.stringify(expected)])).rows[0];
   for(const f of files)await c.query('INSERT INTO mealcart_delivery_media(id,completion_id,kind,filename,mime_type) VALUES($1,$2,$3,$4,$5)',[f.id,input.requestId,f.kind,f.filename,f.mime]);
   await c.query(`UPDATE jobs SET status='completed',completion_photos=$2::jsonb,completion_signature_url=$3,completion_driver_id=$4,completion_recorded_at=$5 WHERE id=$1`,[job.id,JSON.stringify(links),signature,driverId,receiptRow.completed_at]);
-  const completed={...stop,status:'Completed',completedAt:new Date(receiptRow.completed_at).toISOString(),completedByDriverId:driverId,proof:{photos:links,signatureUrl:signature,parcelCount:expected.length,completionId:input.requestId}};
+  const completed={...stop,...(input.offline?{offlineRecordedAt:input.offline.completedAt,offlineScans:input.offline.scans,offlineSyncedAt:new Date(receiptRow.completed_at).toISOString()}:{}),status:'Completed',completedAt:new Date(receiptRow.completed_at).toISOString(),completedByDriverId:driverId,proof:{photos:links,signatureUrl:signature,parcelCount:expected.length,completionId:input.requestId}};
   await c.query(`UPDATE route_plans SET stop_arrivals=jsonb_set(stop_arrivals,$1::text[],$2::jsonb,false),completion_photos=jsonb_set(completion_photos,$3::text[],$4::jsonb,true),completion_signatures=jsonb_set(completion_signatures,$3::text[],$5::jsonb,true),route_version=route_version+1,updated_at=NOW() WHERE public_id=$6`,[`{${index}}`,JSON.stringify(completed),[stop.stopId],JSON.stringify(links),JSON.stringify(signature),planId]);
   await c.query('COMMIT');committed=true;
  }catch(err){
