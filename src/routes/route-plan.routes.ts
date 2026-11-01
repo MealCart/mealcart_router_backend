@@ -1,3 +1,4 @@
+import { getAssignedRouteDetails } from "../services/assigned-route-details.service.js";
 import { updateRoutePlanRoads } from "../models/route-plan.model.js";
 import { Router } from "express";
 import {
@@ -18,6 +19,7 @@ export const routePlanRouter = Router();
 routePlanRouter.get("/route-plans", asyncHandler(listRoutePlansController));
 routePlanRouter.delete("/route-plans", asyncHandler(deleteRoutePlansForDateController));
 routePlanRouter.get("/route-plans/by-driver/:driverId", asyncHandler(getRoutePlanByDriverController));
+routePlanRouter.get("/route-plans/:id/details", asyncHandler(async(req,res)=>{res.json({ok:true,data:await getAssignedRouteDetails(req.params.id)});}));
 routePlanRouter.get("/route-plans/:id", asyncHandler(getRoutePlanController));
 routePlanRouter.post(
   "/route-plans",
