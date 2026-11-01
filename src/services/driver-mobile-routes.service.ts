@@ -7,7 +7,7 @@ import { toPublic, type RoutePlanRow } from '../models/route-plan.model.js';
 /** Fetch only source records explicitly present on this driver's owned plan. No geocoding side effects. */
 async function attachStops(row:RoutePlanRow){
  const jobs:number[]=[],collections:number[]=[];
- for(const id of row.job_ids){const m=/^STP-([JC])([1-9]\d*)$/.exec(id);if(m&&Number.isSafeInteger(Number(m[2]))&&Number(m[2])<=2147483647)(m[1]==='J'?jobs:collections).push(Number(m[2]));}
+ for(const id of new Set(row.stop_arrivals.filter(s=>s.stopId!=='__DEPOT__').map(s=>s.stopId))){const m=/^STP-([JC])([1-9]\d*)$/.exec(id);if(m&&Number.isSafeInteger(Number(m[2]))&&Number(m[2])<=2147483647)(m[1]==='J'?jobs:collections).push(Number(m[2]));}
  const jobRows=jobs.length?(await pool.query(`SELECT id,do_number AS "orderRef",customer_name AS "customerName",phone,delivery_address AS address,postcode,city,state,latitude AS lat,longitude AS lng,special_instructions AS notes FROM jobs WHERE id=ANY($1::int[])`,[jobs])).rows:[];
  const collectionRows=collections.length?(await pool.query(`SELECT id,do_number AS "orderRef",recipient_name AS "customerName",recipient_phone AS phone,collection_address AS address,postcode,city,state,latitude AS lat,longitude AS lng,special_instructions AS notes,time_window AS "window" FROM collections WHERE id=ANY($1::int[])`,[collections])).rows:[];
  const details=new Map<string,any>();
@@ -21,7 +21,7 @@ async function attachStops(row:RoutePlanRow){
 }
 export async function listDriverRoutes(driverId:string,date:string){
  const rows=(await pool.query<RoutePlanRow>(`SELECT *,to_char(created_at::timestamptz AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS plan_created_at,plan_date::text AS plan_date FROM route_plans WHERE driver_id=$1 AND plan_date=$2 AND status='Planned' ORDER BY public_id`,[driverId,date])).rows;
- return rows.map(row=>({id:row.public_id,planDate:date,distanceMeters:row.distance_meters,durationSeconds:row.duration_seconds,stopCount:row.job_ids.length,completed:row.stop_arrivals.filter(s=>s.stopId!=='__DEPOT__'&&s.status==='Completed').length}));
+ return rows.map(row=>({id:row.public_id,planDate:date,distanceMeters:row.distance_meters,durationSeconds:row.duration_seconds,stopCount:row.stop_arrivals.filter(s=>s.stopId!=='__DEPOT__').length,completed:row.stop_arrivals.filter(s=>s.stopId!=='__DEPOT__'&&s.status==='Completed').length}));
 }
 export async function getDriverRoute(driverId:string,id:string){
  const row=(await pool.query<RoutePlanRow>(`SELECT *,to_char(created_at::timestamptz AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS plan_created_at,plan_date::text AS plan_date FROM route_plans WHERE public_id=$1 AND driver_id=$2 AND status='Planned'`,[id,driverId])).rows[0];
@@ -35,7 +35,7 @@ export async function completeDriverStop(driverId:string,planId:string,seq:numbe
   const row=(await c.query<RoutePlanRow>(`SELECT *,to_char(created_at::timestamptz AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS plan_created_at,plan_date::text AS plan_date FROM route_plans WHERE public_id=$1 AND driver_id=$2 AND status='Planned' FOR UPDATE`,[planId,driverId])).rows[0];
   if(!row)throw new ApiError(404,'ROUTE_NOT_FOUND','This route is not available to your driver account.');
   const index=row.stop_arrivals.findIndex(s=>s.seq===seq&&s.stopId===stopId&&s.stopId!=='__DEPOT__');
-  if(index<0||!row.job_ids.includes(stopId))throw new ApiError(404,'STOP_NOT_FOUND','This order is not on the assigned route.');
+  if(index<0)throw new ApiError(404,'STOP_NOT_FOUND','This order is not on the assigned route.');
   const stop=row.stop_arrivals[index];
   if(/^STP-J/.test(stopId))throw new ApiError(409,'PROOF_REQUIRED','Scan every parcel, capture delivery photos and sign before completing this job.');
 

@@ -7,7 +7,7 @@ async function transaction<T>(run:(c:PoolClient)=>Promise<T>){const c=await pool
 async function context(c:PoolClient,driverId:string,planId:string,seq:number,lock=false){
  const plan=(await c.query(`SELECT *,to_char(created_at::timestamptz AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS created_at FROM route_plans WHERE public_id=$1 AND driver_id=$2 AND status='Planned'${lock?' FOR UPDATE':''}`,[planId,driverId])).rows[0];
  if(!plan)throw new ApiError(404,'ROUTE_NOT_FOUND','This route is not assigned to your account.');
- const index=plan.stop_arrivals.findIndex((s:any)=>s.seq===seq&&plan.job_ids.includes(s.stopId));const stop=plan.stop_arrivals[index];
+ const index=plan.stop_arrivals.findIndex((s:any)=>s.seq===seq);const stop=plan.stop_arrivals[index];
  const match=stop&&/^STP-J([1-9]\d*)$/.exec(stop.stopId);
  if(!match)throw new ApiError(400,'DELIVERY_REQUIRED','Parcel proof is available for delivery jobs only.');
  const job=(await c.query(`SELECT id,do_number,barcodes,status FROM jobs WHERE id=$1${lock?' FOR UPDATE':''}`,[match[1]])).rows[0];
