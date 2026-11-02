@@ -1,3 +1,4 @@
+import {adminLocationRouter} from "./driver-location.routes.js";
 import {adminProofRouter} from "./delivery-proof.routes.js";
 import { driverMobileRouter } from "./driver-mobile.routes.js";
 import { Router } from "express";
@@ -35,3 +36,5 @@ apiRouter.use(settingsRouter);
 apiRouter.use(keyRouter);
 
 apiRouter.use(adminProofRouter);
+
+apiRouter.use(adminLocationRouter);

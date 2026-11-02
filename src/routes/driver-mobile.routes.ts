@@ -1,3 +1,4 @@
+import {mobileLocationRouter} from "./driver-location.routes.js";
 import {offlineIdentitySchema} from "../validators/delivery-proof.validator.js";
 import {deliveryProofRouter} from "./delivery-proof.routes.js";
 import { Router } from 'express';
@@ -22,6 +23,7 @@ driverMobileRouter.post('/auth/login',validateBody(loginSchema),asyncHandler(asy
  res.setHeader('Cache-Control','no-store');res.json({ok:true,data:result});
 }));
 driverMobileRouter.use(driverMobileAuth);
+driverMobileRouter.use(mobileLocationRouter);
 driverMobileRouter.use(deliveryProofRouter);
 driverMobileRouter.get('/auth/me',(_req,res)=>{res.json({ok:true,data:res.locals.driver});});
 driverMobileRouter.post('/auth/logout',asyncHandler(async(req,res)=>{await driverLogout(driverBearer(req));res.status(204).send();}));
