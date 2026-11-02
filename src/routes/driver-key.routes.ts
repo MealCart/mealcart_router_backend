@@ -1,0 +1,12 @@
+import {Router} from 'express';
+import {asyncHandler} from '../utils/async-handler.js';
+import {validateBody} from '../middleware/validate.middleware.js';
+import {ApiError} from '../types/api.types.js';
+import {keyBarcodeSchema,acceptDriverKeySchema,requestDriverKeyReturnSchema} from '../validators/driver-key.validator.js';
+import {listDriverKeys,getDriverKey,acceptScannedDriverKey,requestDriverKeyReturn} from '../services/key.service.js';
+export const driverKeyRouter=Router();
+const keyId=(value:string)=>{const result=keyBarcodeSchema.safeParse(value);if(!result.success)throw new ApiError(400,'INVALID_KEY_ID','Invalid key barcode.');return result.data;};
+driverKeyRouter.get('/keys',asyncHandler(async(_req,res)=>{res.json({ok:true,data:await listDriverKeys(res.locals.driver.id)});}));
+driverKeyRouter.get('/keys/:id',asyncHandler(async(req,res)=>{res.json({ok:true,data:await getDriverKey(keyId(req.params.id),res.locals.driver.id)});}));
+driverKeyRouter.post('/keys/:id/accept',validateBody(acceptDriverKeySchema),asyncHandler(async(req,res)=>{res.json({ok:true,data:await acceptScannedDriverKey(keyId(req.params.id),req.body.issueId,req.body.barcode,res.locals.driver.id)});}));
+driverKeyRouter.post('/keys/:id/return',validateBody(requestDriverKeyReturnSchema),asyncHandler(async(req,res)=>{res.json({ok:true,data:await requestDriverKeyReturn(keyId(req.params.id),req.body.issueId,req.body.notes,res.locals.driver.id)});}));

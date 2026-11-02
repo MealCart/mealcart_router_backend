@@ -6,9 +6,9 @@ import type { RegisterKeyInput, IssueKeyInput, KeyMovementInput } from "../valid
 
 const selection = `SELECT k.id,k.name,k.customer_id::text AS "customerId",k.client_name AS "clientName",k.notes,k.version,
  k.created_at AS "createdAt",k.updated_at AS "updatedAt",
- CASE WHEN i.status='pending' THEN 'Pending acceptance' WHEN i.status='accepted' THEN 'With driver' ELSE 'In office' END AS status,
+ CASE WHEN i.status='pending' THEN 'Pending acceptance' WHEN i.status='accepted' AND i.return_requested_at IS NOT NULL THEN 'Return pending' WHEN i.status='accepted' THEN 'With driver' ELSE 'In office' END AS status,
  CASE WHEN i.id IS NULL THEN NULL ELSE jsonb_build_object('id',i.id,'driverId',i.driver_id,'driverName',i.driver_name,
- 'issuedAt',i.issued_at,'acceptedAt',i.accepted_at) END AS "activeIssue",
+ 'issuedAt',i.issued_at,'acceptedAt',i.accepted_at,'returnRequestedAt',i.return_requested_at,'returnNotes',i.return_notes) END AS "activeIssue",
  COALESCE((SELECT jsonb_agg(jsonb_build_object('id',e.id::text,'issueId',e.issue_id,'action',e.action,'at',e.at,
  'driverId',e.driver_id,'driverName',e.driver_name,'recordedBy',e.actor_name,'actorType',e.actor_type,'notes',e.notes) ORDER BY e.id)
  FROM mealcart_key_events e WHERE e.key_id=k.id),'[]'::jsonb) AS history
@@ -82,9 +82,8 @@ export async function receiveOrCancelKey(id: string,input: KeyMovementInput,user
   await bump(c,id);return get(c,id);
  });
 }
-/** FUTURE DRIVER APP ONLY. Never expose this behind the admin session or trust a body driverId.
- * A future route must supply authenticatedDriverId from verified driver authentication.
- * Scan yields keyId; fetch pending issueId for that authenticated driver before accepting.
+/** Internal acceptance helper. Mobile routes use acceptScannedDriverKey below
+ * for barcode validation and a driver-scoped response. Never trust a body driverId.
  */
 export async function acceptKeyForDriver(keyId: string,issueId: string,authenticatedDriverId: string) {
  return transaction(async c=>{
@@ -98,5 +97,47 @@ export async function acceptKeyForDriver(keyId: string,issueId: string,authentic
   await c.query("UPDATE mealcart_key_issues SET status='accepted',accepted_at=clock_timestamp() WHERE id=$1",[issue.id]);
   await event(c,keyId,issue,'Accepted',{id:driver.public_id,name:driver.name,type:'driver'},'Driver accepted by barcode scan');
   await bump(c,keyId);return get(c,keyId);
+ });
+}
+
+// Never return another driver's issue history through mobile endpoints.
+const driverSelection=`SELECT k.id,k.name,k.client_name AS "clientName",k.notes,k.version,
+ CASE WHEN mine.status='pending' THEN 'Pending acceptance' WHEN mine.status='accepted' AND mine.return_requested_at IS NOT NULL THEN 'Return pending' WHEN mine.status='accepted' THEN 'With driver' WHEN mine.status='received' THEN 'Returned' ELSE 'Cancelled' END AS status,
+ jsonb_build_object('id',mine.id,'status',mine.status,'issuedAt',mine.issued_at,'acceptedAt',mine.accepted_at,'returnRequestedAt',mine.return_requested_at,'returnNotes',mine.return_notes,'receivedAt',mine.received_at,'cancelledAt',mine.cancelled_at) AS issue,
+ COALESCE((SELECT jsonb_agg(x.entry ORDER BY x.event_id) FROM (SELECT e.id AS event_id,jsonb_build_object('id',e.id::text,'issueId',e.issue_id,'action',e.action,'at',e.at,'recordedBy',e.actor_name,'actorType',e.actor_type,'notes',e.notes) AS entry FROM mealcart_key_events e WHERE e.key_id=k.id AND e.driver_id=$1 ORDER BY e.id DESC LIMIT 200) x),'[]'::jsonb) AS history
+ FROM mealcart_keys k JOIN (SELECT DISTINCT ON (key_id) * FROM mealcart_key_issues WHERE driver_id=$1 ORDER BY key_id,issued_at DESC,id DESC) mine ON mine.key_id=k.id
+ JOIN drivers d ON d.public_id=mine.driver_id AND d.status='Active'`;
+async function driverGet(c:PoolClient,keyId:string,driverId:string){const row=(await c.query(driverSelection+' WHERE k.id=$2',[driverId,keyId])).rows[0];if(!row)throw new ApiError(404,'DRIVER_KEY_NOT_FOUND','This key has not been assigned to your account.');return row;}
+export async function listDriverKeys(driverId:string){return(await pool.query(driverSelection+' ORDER BY CASE WHEN mine.status IN (\'pending\',\'accepted\') THEN 0 ELSE 1 END,mine.issued_at DESC',[driverId])).rows;}
+export async function getDriverKey(keyId:string,driverId:string){const c=await pool.connect();try{return await driverGet(c,keyId,driverId);}finally{c.release();}}
+export async function acceptScannedDriverKey(keyId:string,issueId:string,barcode:string,driverId:string){
+ if(barcode!==keyId)throw new ApiError(400,'WRONG_KEY_BARCODE','The scanned barcode does not match this key.');
+ return transaction(async c=>{
+  await lockedKey(c,keyId);
+  const issue=(await c.query('SELECT * FROM mealcart_key_issues WHERE id=$1 AND key_id=$2 FOR UPDATE',[issueId,keyId])).rows[0];
+  if(!issue||issue.driver_id!==driverId)throw new ApiError(403,'KEY_NOT_ASSIGNED','This key issue is not assigned to your account.');
+  const driver=(await c.query('SELECT public_id,name,status FROM drivers WHERE public_id=$1 FOR SHARE',[driverId])).rows[0];
+  if(!driver||driver.status!=='Active')throw new ApiError(403,'DRIVER_INACTIVE','An active driver account is required.');
+  if(issue.status!=='pending'&&issue.status!=='accepted')throw new ApiError(409,'ISSUE_CLOSED','This key issue has closed. Refresh your assigned keys.');
+  if(issue.status==='pending'){
+   await c.query("UPDATE mealcart_key_issues SET status='accepted',accepted_at=clock_timestamp() WHERE id=$1",[issueId]);
+   await event(c,keyId,issue,'Accepted',{id:driver.public_id,name:driver.name,type:'driver'},'Driver accepted by barcode scan');await bump(c,keyId);
+  }
+  return driverGet(c,keyId,driverId);
+ });
+}
+export async function requestDriverKeyReturn(keyId:string,issueId:string,notes:string,driverId:string){
+ return transaction(async c=>{
+  await lockedKey(c,keyId);
+  const driver=(await c.query('SELECT public_id,name,status FROM drivers WHERE public_id=$1 FOR SHARE',[driverId])).rows[0];
+  if(!driver||driver.status!=='Active')throw new ApiError(403,'DRIVER_INACTIVE','An active driver account is required.');
+  const issue=(await c.query('SELECT * FROM mealcart_key_issues WHERE id=$1 AND key_id=$2 FOR UPDATE',[issueId,keyId])).rows[0];
+  if(!issue||issue.driver_id!==driverId)throw new ApiError(403,'KEY_NOT_ASSIGNED','This key issue is not assigned to your account.');
+  if(issue.status==='received'){const current=await driverGet(c,keyId,driverId);if(current.issue.id!==issueId)throw new ApiError(409,'ISSUE_CLOSED','That key issue has closed. Refresh your keys.');return current;}
+  if(issue.status!=='accepted')throw new ApiError(409,'KEY_NOT_ACCEPTED','Scan and accept the key before requesting its return.');
+  if(issue.return_requested_at)return driverGet(c,keyId,driverId);
+  await c.query('UPDATE mealcart_key_issues SET return_requested_at=clock_timestamp(),return_notes=$2 WHERE id=$1',[issueId,notes]);
+  await event(c,keyId,issue,'Return requested',{id:driver.public_id,name:driver.name,type:'driver'},notes||'Driver handed key to office; awaiting office confirmation');
+  await bump(c,keyId);return driverGet(c,keyId,driverId);
  });
 }
