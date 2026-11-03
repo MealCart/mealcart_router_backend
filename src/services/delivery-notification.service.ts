@@ -4,7 +4,7 @@ import {pool} from '../db/pool.js';
 import {messaging as cfg} from '../config/delivery-messaging.js';
 import {localClock,renderMessage,phoneE164} from '../lib/delivery-events.js';
 import {sendNotification,ProviderFailure} from './notification-provider.service.js';
-import {recipientSettings,reminderSchedule,listReminderSchedules,reminderDue,addDays,REMINDER_EVENT} from './reminder-schedule.service.js';
+import {reminderSchedule,listReminderSchedules,reminderDue,addDays,REMINDER_EVENT} from './reminder-schedule.service.js';
 import {jobByDoNumber,routeJob,plannedJobs} from './job-notification-source.service.js';
 
 export async function notificationContext(jobId:number,event:string,templateId?:string){
@@ -17,11 +17,10 @@ export async function notificationContext(jobId:number,event:string,templateId?:
  if(String(job.customer_status).toLowerCase()!=='active'||job.group_status!=='Active')return{problem:'Customer or group is inactive / unassigned',job};
  const templates=(await pool.query(`SELECT t.* FROM mealcart_message_templates t JOIN mealcart_group_templates gt ON gt.template_id=t.id WHERE gt.group_id=$1 AND t.event=$2 AND t.status='Active' AND t.channel IN ($3,'Both') AND ($4::text IS NULL OR t.id=$4) ORDER BY t.id`,[job.group_id,event,job.preferred_contact,templateId??null])).rows;
  if(templates.length!==1)return{problem:templates.length?'Multiple active templates match this group/event/channel; use one for this event':'No active matching assigned group template',job};
- const settings=await recipientSettings();
- job.recipient_name=String(job.job[settings.nameColumn]??'').trim();
- job.recipient_phone=String(job.job[settings.phoneColumn]??'').trim();
- job.recipient_email=settings.emailColumn?String(job.job[settings.emailColumn]??'').trim():'';
- let recipient='';try{recipient=job.preferred_contact==='SMS'?phoneE164(job.recipient_phone):job.recipient_email;if(job.preferred_contact==='Email'&&!settings.emailColumn)throw new Error('Select the jobs recipient-email column in Recipient fields before enabling email');if(job.preferred_contact==='Email'&&!/^[^\s@,;<>]+@[^\s@,;<>]+\.[^\s@,;<>]+$/.test(recipient))throw new Error('Job recipient email is missing or invalid');}catch(error){return{problem:(error as Error).message,job};}
+ job.recipient_name=String(job.job.recipient_name??'').trim();
+ job.recipient_phone=String(job.job.recipient_phon??'').trim();
+ job.recipient_email=String(job.job.recipient_email??'').trim();
+ let recipient='';try{recipient=job.preferred_contact==='SMS'?phoneE164(job.recipient_phone):job.recipient_email;if(job.preferred_contact==='Email'&&!/^[^\s@,;<>]+@[^\s@,;<>]+\.[^\s@,;<>]+$/.test(recipient))throw new Error('Job recipient email is missing or invalid');}catch(error){return{problem:(error as Error).message,job};}
  return{job,template:templates[0],recipient,problem:''};
 }
 export async function liveJob(jobId:number,date:string){
@@ -36,7 +35,7 @@ export async function liveJob(jobId:number,date:string){
 type Eligible={problem:string;job?:any;template?:any;recipient?:string;live?:any;reason?:string;lead?:number|null;schedule?:any;completion?:any};
 async function isEligible(jobId:number,event:string,date:string,now:Date,scheduleKey=''):Promise<Eligible>{
  let schedule:any=null;
- if(event===REMINDER_EVENT){if(!scheduleKey)return{problem:'A flexible reminder schedule is required'};schedule=await reminderSchedule(scheduleKey);if(!schedule?.enabled)return{problem:'Reminder disabled or removed'};if(!reminderDue(schedule,date,now))return{problem:'Reminder sending window expired or not yet due'};}
+ if(event===REMINDER_EVENT){if(!scheduleKey)return{problem:'Template timing reference is required'};schedule=await reminderSchedule(scheduleKey);if(!schedule?.enabled)return{problem:'Reminder template is inactive or no longer selected for this group'};if(!reminderDue(schedule,date,now))return{problem:'Reminder sending window expired or not yet due'};}
  else if(!['Delivery ETA — One Hour','Delivery Failed','Delivery Completed'].includes(event))return{problem:'Legacy event is not automated; use a flexible reminder schedule'};
  const c=await notificationContext(jobId,event,schedule?.templateId);if(c.problem||!c.job||!c.template)return{...c,problem:c.problem||'Template unavailable'};
  if(schedule&&schedule.groupId!==c.job.group_id)return{...c,problem:'Job is no longer in the reminder group'};
@@ -67,7 +66,8 @@ function messageData(c:Eligible,date:string){
 }
 export async function enqueueNotice(jobId:number,date:string,event:string,now=new Date(),scheduleKey=''){
  const c=await isEligible(jobId,event,date,now,scheduleKey);if(c.problem)return c.problem;
- try{const vars=messageData(c,date);await pool.query(`INSERT INTO mealcart_delivery_messages(id,job_id,delivery_date,event,channel,customer_id,group_id,template_id,recipient,subject,body,lead_seconds,schedule_key,do_number,recipient_source) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'jobs') ON CONFLICT(job_id,delivery_date,event,channel,schedule_key) DO NOTHING`,[randomUUID(),jobId,date,event,c.job.preferred_contact,c.job.customer_id,c.job.group_id,c.template.id,c.recipient,renderMessage(c.template.subject,vars),renderMessage(c.template.body,vars),c.lead??null,scheduleKey,c.job.job.do_number]);return'';}catch(error){return(error as Error).message;}
+ if(event===REMINDER_EVENT){const previous=await pool.query(`SELECT 1 FROM mealcart_delivery_messages m WHERE m.job_id=$1 AND m.delivery_date=$2 AND m.channel=$3 AND m.group_id=$4 AND m.event=$5 AND m.status IN ('accepted','unknown','sending') AND (m.template_id=$6 OR m.schedule_key IN (SELECT old_schedule_id FROM mealcart_reminder_legacy_links WHERE template_id=$6 AND group_id=$4)) LIMIT 1`,[jobId,date,c.job.preferred_contact,c.job.group_id,event,c.template.id]);if(previous.rows.length)return '';}
+ try{const vars=messageData(c,date);await pool.query(`INSERT INTO mealcart_delivery_messages(id,job_id,delivery_date,event,channel,customer_id,group_id,template_id,recipient,subject,body,lead_seconds,schedule_key,do_number,recipient_source) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'jobs') ON CONFLICT(job_id,delivery_date,event,channel,schedule_key) DO UPDATE SET recipient=EXCLUDED.recipient,subject=EXCLUDED.subject,body=EXCLUDED.body,customer_id=EXCLUDED.customer_id,group_id=EXCLUDED.group_id,template_id=EXCLUDED.template_id,do_number=EXCLUDED.do_number,status='queued',detail='Reminder is eligible after template/group changes',attempted_at=NULL WHERE mealcart_delivery_messages.status='cancelled' AND EXCLUDED.event='Scheduled Delivery Reminder' AND mealcart_delivery_messages.recipient_source='jobs'`,[randomUUID(),jobId,date,event,c.job.preferred_contact,c.job.customer_id,c.job.group_id,c.template.id,c.recipient,renderMessage(c.template.subject,vars),renderMessage(c.template.body,vars),c.lead??null,scheduleKey,c.job.job.do_number]);return'';}catch(error){return(error as Error).message;}
 }
 export async function discoverNotices(now=new Date()){
  const clock=localClock(now,cfg.DELIVERY_TIMEZONE),schedules=await listReminderSchedules();

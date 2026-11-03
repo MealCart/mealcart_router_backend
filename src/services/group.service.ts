@@ -12,7 +12,7 @@ const groupSelect = `SELECT g.id, g.name, g.description, g.preferred_contact AS 
  COALESCE((SELECT jsonb_agg(t.template_id ORDER BY t.template_id)
  FROM mealcart_group_templates t WHERE t.group_id=g.id), '[]'::jsonb) AS "templateIds"
  FROM mealcart_customer_groups g`;
-const templateSelect = `SELECT id,name,description,channel,event,subject,body,status,
+const templateSelect = `SELECT id,name,description,channel,event,subject,body,status,reminder_days_before AS "daysBefore",to_char(reminder_send_time,'HH24:MI') AS "sendTime",
  to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS "updatedAt" FROM mealcart_message_templates`;
 
 export async function listGroups() { return (await pool.query(groupSelect + " ORDER BY lower(g.name),g.id")).rows; }
@@ -59,8 +59,12 @@ export async function saveGroup(input: GroupInput, id?: string, version?: number
   // Lock and revalidate all selected users so a forged admin/staff ID cannot be saved.
   const members = await client.query("SELECT id,role FROM users WHERE id=ANY($1::int[]) ORDER BY id FOR UPDATE",[input.memberIds]);
   if (members.rows.length !== input.memberIds.length || members.rows.some(u => u.role !== "customer")) throw new ApiError(400,"INVALID_MEMBERS","Every selected member must exist and have role customer. Refresh the customer list.");
-  const templates = await client.query("SELECT id FROM mealcart_message_templates WHERE id=ANY($1::varchar[]) FOR SHARE",[input.templateIds]);
+  const templates = await client.query("SELECT id,event,channel,status,reminder_days_before,to_char(reminder_send_time,'HH24:MI') AS reminder_send_time FROM mealcart_message_templates WHERE id=ANY($1::varchar[]) FOR SHARE",[input.templateIds]);
   if (templates.rows.length !== input.templateIds.length) throw new ApiError(400,"INVALID_TEMPLATES","A selected template no longer exists. Refresh and try again.");
+  const matching=templates.rows.filter(t=>t.status==='Active'&&(t.channel===input.contact||t.channel==='Both')&&t.event!=='Scheduled Delivery Reminder');
+  if(new Set(matching.map(t=>t.event)).size!==matching.length)throw new ApiError(400,'DUPLICATE_EVENT_TEMPLATE','Select only one active matching template for each non-reminder delivery event');
+  const reminders=templates.rows.filter(t=>t.status==='Active'&&(t.channel===input.contact||t.channel==='Both')&&t.event==='Scheduled Delivery Reminder');
+  if(new Set(reminders.map(t=>`${t.reminder_days_before}|${t.reminder_send_time}`)).size!==reminders.length)throw new ApiError(400,'DUPLICATE_REMINDER_TIME','Select only one active reminder for each days-before/send-time combination');
   const values = [input.name,input.description,input.contact,input.status,input.recordTemperature,groupId];
   if (id) await client.query("UPDATE mealcart_customer_groups SET name=$1,description=$2,preferred_contact=$3,status=$4,record_temperature=$5,version=version+1,updated_at=NOW() WHERE id=$6", values);
   else await client.query("INSERT INTO mealcart_customer_groups (name,description,preferred_contact,status,record_temperature,id) VALUES ($1,$2,$3,$4,$5,$6)",values);
@@ -98,26 +102,19 @@ export async function saveTemplate(input: TemplateInput, id?: string) {
   const duplicate = await client.query(`SELECT id FROM mealcart_message_templates WHERE lower(trim(name))=lower(trim($1))
    AND event=$2 AND (channel=$3 OR channel='Both' OR $3='Both') AND id<>$4`,[input.name,input.event,input.channel,templateId]);
   if (duplicate.rows.length) throw new ApiError(409,"TEMPLATE_EXISTS","A template with this name already exists for this event and channel.");
-  let affectedGroupIds: string[] = [];
-  if (input.groupIds !== undefined) {
-   const current = await client.query("SELECT group_id FROM mealcart_group_templates WHERE template_id=$1", [templateId]);
-   affectedGroupIds = [...new Set([...input.groupIds, ...current.rows.map(row => row.group_id as string)])].sort();
-   const selectedGroups = await client.query("SELECT id,version FROM mealcart_customer_groups WHERE id=ANY($1::varchar[]) ORDER BY id FOR UPDATE", [affectedGroupIds]);
-   if (selectedGroups.rows.length !== affectedGroupIds.length) throw new ApiError(400,"INVALID_GROUPS","A selected group no longer exists. Refresh and try again.");
-   if (selectedGroups.rows.some(group => input.groupVersions?.[group.id] !== group.version)) throw new ApiError(409,"GROUP_CHANGED","Group assignments changed. Close this editor, refresh, and reopen the template before saving.");
+  if(input.status==='Active'){
+   const conflict=(await client.query(`SELECT g.name FROM mealcart_group_templates own JOIN mealcart_customer_groups g ON g.id=own.group_id
+    JOIN mealcart_group_templates other ON other.group_id=g.id JOIN mealcart_message_templates t ON t.id=other.template_id
+    WHERE own.template_id=$1 AND t.id<>$1 AND t.event=$2 AND t.status='Active'
+    AND $3 IN (g.preferred_contact,'Both') AND t.channel IN (g.preferred_contact,'Both')
+    AND ($2<>'Scheduled Delivery Reminder' OR (t.reminder_days_before=$4 AND t.reminder_send_time=$5::time)) LIMIT 1`,[templateId,input.event,input.channel,input.daysBefore??null,input.sendTime??null])).rows[0];
+   if(conflict)throw new ApiError(409,'GROUP_TEMPLATE_CONFLICT',`This would duplicate another active message in group ${conflict.name}. Change that group's selection first`);
   }
-  const values = [input.name,input.description,input.channel,input.event,input.channel==='SMS'?'':input.subject,input.body,input.status,templateId];
-  if (id) await client.query("UPDATE mealcart_message_templates SET name=$1,description=$2,channel=$3,event=$4,subject=$5,body=$6,status=$7,updated_at=NOW() WHERE id=$8",values);
-  else await client.query("INSERT INTO mealcart_message_templates (name,description,channel,event,subject,body,status,id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",values);
-  if (input.groupIds !== undefined) {
-   await client.query("DELETE FROM mealcart_group_templates WHERE template_id=$1", [templateId]);
-   await client.query("INSERT INTO mealcart_group_templates (group_id,template_id) SELECT unnest($1::varchar[]),$2", [input.groupIds, templateId]);
-   // Increment groups that gained OR lost this template, invalidating stale group editors.
-   await client.query("UPDATE mealcart_customer_groups SET version=version+1,updated_at=NOW() WHERE id=ANY($1::varchar[])", [affectedGroupIds]);
-  } else {
-   // Existing clients can edit content/status without touching group assignments.
-   await client.query("UPDATE mealcart_customer_groups SET version=version+1,updated_at=NOW() WHERE id IN (SELECT group_id FROM mealcart_group_templates WHERE template_id=$1)",[templateId]);
-  }
+  const values = [input.name,input.description,input.channel,input.event,input.channel==='SMS'?'':input.subject,input.body,input.status,templateId,input.event==='Scheduled Delivery Reminder'?input.daysBefore:null,input.event==='Scheduled Delivery Reminder'?input.sendTime:null];
+  if (id) await client.query("UPDATE mealcart_message_templates SET name=$1,description=$2,channel=$3,event=$4,subject=$5,body=$6,status=$7,reminder_days_before=$9,reminder_send_time=$10,updated_at=NOW() WHERE id=$8",values);
+  else await client.query("INSERT INTO mealcart_message_templates (name,description,channel,event,subject,body,status,id,reminder_days_before,reminder_send_time) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",values);
+  // Assignments can only be changed by saveGroup, never by template edits.
+  await client.query("UPDATE mealcart_customer_groups SET version=version+1,updated_at=NOW() WHERE id IN (SELECT group_id FROM mealcart_group_templates WHERE template_id=$1)",[templateId]);
   return (await client.query(templateSelect + " WHERE id=$1",[templateId])).rows[0];
  });
 }
