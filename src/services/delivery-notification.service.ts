@@ -33,14 +33,20 @@ export async function liveJob(jobId:number,date:string){
  WHERE p.status='Planned' AND p.plan_date=$1 AND (s.value->>'stopId' IN ($2,$3) OR s.value->>'do_number'=$2 OR s.value->>'doNumber'=$2 OR s.value->>'orderRef'=$2)`,[date,source.do_number,`STP-J${jobId}`])).rows;
  if(rows.length!==1)return null;try{const matched=await routeJob(rows[0].stop);return matched?.id===jobId?rows[0]:null;}catch{return null;}
 }
-type Eligible={problem:string;job?:any;template?:any;recipient?:string;live?:any;reason?:string;lead?:number|null;schedule?:any};
+type Eligible={problem:string;job?:any;template?:any;recipient?:string;live?:any;reason?:string;lead?:number|null;schedule?:any;completion?:any};
 async function isEligible(jobId:number,event:string,date:string,now:Date,scheduleKey=''):Promise<Eligible>{
  let schedule:any=null;
  if(event===REMINDER_EVENT){if(!scheduleKey)return{problem:'A flexible reminder schedule is required'};schedule=await reminderSchedule(scheduleKey);if(!schedule?.enabled)return{problem:'Reminder disabled or removed'};if(!reminderDue(schedule,date,now))return{problem:'Reminder sending window expired or not yet due'};}
- else if(!['Delivery ETA — One Hour','Delivery Failed'].includes(event))return{problem:'Legacy event is not automated; use a flexible reminder schedule'};
+ else if(!['Delivery ETA — One Hour','Delivery Failed','Delivery Completed'].includes(event))return{problem:'Legacy event is not automated; use a flexible reminder schedule'};
  const c=await notificationContext(jobId,event,schedule?.templateId);if(c.problem||!c.job||!c.template)return{...c,problem:c.problem||'Template unavailable'};
  if(schedule&&schedule.groupId!==c.job.group_id)return{...c,problem:'Job is no longer in the reminder group'};
  const job=c.job.job;if(String(job.scheduled_date).slice(0,10)!==date)return{...c,problem:'Job delivery date changed'};
+ if(event==='Delivery Completed'){
+  if(String(job.status).toLowerCase()!=='completed')return{...c,problem:'Job is not completed'};
+  const completion=(await pool.query(`SELECT * FROM mealcart_completed_delivery_events WHERE job_id=$1 AND delivery_date=$2 AND do_number=$3 AND created_at>$4::timestamptz-interval '24 hours' ORDER BY created_at DESC LIMIT 1`,[jobId,date,job.do_number,now.toISOString()])).rows[0];
+  if(!completion)return{...c,problem:'No new verified delivery completion event in the sending window'};
+  return{...c,completion,reason:'',lead:null};
+ }
  const live=await liveJob(jobId,date);
  if(event==='Delivery Failed'){
   if(String(job.status).toLowerCase()!=='failed')return{...c,problem:'Job is no longer failed'};
@@ -57,7 +63,7 @@ async function isEligible(jobId:number,event:string,date:string,now:Date,schedul
 }
 function messageData(c:Eligible,date:string){
  const job=c.job.job,arrival=Number(c.live?.stop.liveEtaSeconds),name=c.job.recipient_name||'Recipient';
- return{customer_name:name,recipient_name:name,recipient_phone:c.job.recipient_phone,recipient_email:c.job.recipient_email,order_id:String(job.do_number),driver_name:c.live?.driver_name??'Mealcart driver',delivery_date:date,estimated_arrival:Number.isFinite(arrival)?`${String(Math.floor(arrival/3600)%24).padStart(2,'0')}:${String(Math.floor(arrival/60)%60).padStart(2,'0')} (${cfg.DELIVERY_TIMEZONE})`:'To be confirmed',delivery_address:String(job.delivery_address??''),company_name:'Mealcart',failure_reason:String(c.reason??'')};
+ return{customer_name:name,recipient_name:name,recipient_phone:c.job.recipient_phone,recipient_email:c.job.recipient_email,order_id:String(job.do_number),driver_name:c.completion?.driver_name??c.live?.driver_name??'Mealcart driver',delivery_date:date,estimated_arrival:Number.isFinite(arrival)?`${String(Math.floor(arrival/3600)%24).padStart(2,'0')}:${String(Math.floor(arrival/60)%60).padStart(2,'0')} (${cfg.DELIVERY_TIMEZONE})`:'To be confirmed',delivery_address:String(job.delivery_address??''),company_name:'Mealcart',failure_reason:String(c.reason??''),completed_at:c.completion?new Intl.DateTimeFormat('en-AU',{timeZone:cfg.DELIVERY_TIMEZONE,dateStyle:'medium',timeStyle:'short'}).format(new Date(c.completion.completed_at))+' ('+cfg.DELIVERY_TIMEZONE+')':''};
 }
 export async function enqueueNotice(jobId:number,date:string,event:string,now=new Date(),scheduleKey=''){
  const c=await isEligible(jobId,event,date,now,scheduleKey);if(c.problem)return c.problem;
@@ -76,6 +82,8 @@ export async function discoverNotices(now=new Date()){
  for(const row of dueEtas){try{const j=await routeJob(row.stop);if(j)await enqueueNotice(j.id,clock.date,'Delivery ETA — One Hour',now);}catch{/* Ambiguous references are reported by the admin readiness check; never guess. */}}
  const failures=(await pool.query(`SELECT DISTINCT f.job_id,j.scheduled_date::text AS date FROM mealcart_delivery_failures f JOIN jobs j ON j.id=f.job_id WHERE f.received_at>$1::timestamptz-interval '24 hours' AND lower(j.status)='failed' AND f.delivery_date=j.scheduled_date`,[now.toISOString()])).rows;
  for(const j of failures)await enqueueNotice(j.job_id,j.date,'Delivery Failed',now);
+ const completions=(await pool.query(`SELECT DISTINCT e.job_id,e.delivery_date::text AS date FROM mealcart_completed_delivery_events e JOIN jobs j ON j.id=e.job_id AND j.do_number=e.do_number WHERE e.created_at>$1::timestamptz-interval '24 hours' AND lower(j.status)='completed' AND e.delivery_date=j.scheduled_date AND NOT EXISTS(SELECT 1 FROM mealcart_delivery_messages m WHERE m.job_id=e.job_id AND m.delivery_date=e.delivery_date AND m.event='Delivery Completed' AND m.recipient_source='jobs')`,[now.toISOString()])).rows;
+ for(const j of completions)await enqueueNotice(j.job_id,j.date,'Delivery Completed',now);
 }
 export async function dispatchNotices(now?:Date){
  await pool.query(`UPDATE mealcart_delivery_messages SET status='unknown',detail='Worker stopped during submission; check provider before any resend' WHERE status='sending' AND attempted_at<$1::timestamptz-interval '5 minutes'`,[(now??new Date()).toISOString()]);
