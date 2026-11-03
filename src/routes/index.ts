@@ -1,3 +1,4 @@
+import {adminMessagingRouter} from "./delivery-messaging.routes.js";
 import {adminLocationRouter} from "./driver-location.routes.js";
 import {adminProofRouter} from "./delivery-proof.routes.js";
 import { driverMobileRouter } from "./driver-mobile.routes.js";
@@ -38,3 +39,5 @@ apiRouter.use(keyRouter);
 apiRouter.use(adminProofRouter);
 
 apiRouter.use(adminLocationRouter);
+
+apiRouter.use(adminMessagingRouter);

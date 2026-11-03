@@ -1,3 +1,4 @@
+import {mobileExecutionRouter} from "./delivery-messaging.routes.js";
 import {driverKeyRouter} from './driver-key.routes.js';
 import {mobileLocationRouter} from "./driver-location.routes.js";
 import {offlineIdentitySchema} from "../validators/delivery-proof.validator.js";
@@ -24,6 +25,7 @@ driverMobileRouter.post('/auth/login',validateBody(loginSchema),asyncHandler(asy
  res.setHeader('Cache-Control','no-store');res.json({ok:true,data:result});
 }));
 driverMobileRouter.use(driverMobileAuth);
+driverMobileRouter.use(mobileExecutionRouter);
 driverMobileRouter.use(driverKeyRouter);
 driverMobileRouter.use(mobileLocationRouter);
 driverMobileRouter.use(deliveryProofRouter);

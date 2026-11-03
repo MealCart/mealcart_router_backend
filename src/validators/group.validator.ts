@@ -1,5 +1,5 @@
 import { z } from "zod";
-export const deliveryEvents = ["Delivery Scheduled", "Driver Assigned", "Driver Started Route", "Driver En Route to Customer", "Delivery Arriving Soon", "Delivery Completed", "Delivery Failed", "Delivery Rescheduled", "Order Cancelled"] as const;
+export const deliveryEvents = ["Scheduled Delivery Reminder", "Delivery Today — 7 AM", "Delivery Tomorrow — 8 PM", "Delivery ETA — One Hour", "Delivery Scheduled", "Driver Assigned", "Driver Started Route", "Driver En Route to Customer", "Delivery Arriving Soon", "Delivery Completed", "Delivery Failed", "Delivery Rescheduled", "Order Cancelled"] as const;
 const unique = (values: string[]) => new Set(values).size === values.length;
 const userId = z.string().regex(/^[1-9]\d*$/).refine(v => Number.isSafeInteger(Number(v)) && Number(v) <= 2147483647, "Invalid customer ID");
 const groupFields = {
