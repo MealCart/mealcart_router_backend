@@ -28,7 +28,7 @@ export async function notificationContext(
  WHERE gt.group_id=$1 AND t.event=$2 AND t.status='Active' AND t.channel=$3 AND ($4::text IS NULL OR t.id=$4)`,[job.group_id,event,channel,templateId??null])).rows;
  if(templates.length!==1)return{problem:templates.length?'Multiple assigned templates match this event and channel':'No active assigned template for this event and channel',job};
  job.recipient_name=String(job.job.recipient_name??'').trim();
- job.recipient_phone=String(job.job.recipient_phon??'').trim();
+ job.recipient_phone=String(job.job.recipient_phone??'').trim();
  job.recipient_email=String(job.job.recipient_email??'').trim();
  try{
   const recipient=channel==='SMS'?phoneE164(job.recipient_phone):job.recipient_email;
