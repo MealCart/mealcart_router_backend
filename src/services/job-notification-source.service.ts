@@ -19,10 +19,23 @@ export async function routeJob(stop:any){
  if(literal.length===1)return literal[0];
  throw new Error('Route stop has no unique jobs.do_number match');
 }
+export type NotificationSource = 'jobs' | 'collections';
+export async function routeNotificationSource(stop:any){
+ const match=/^STP-C([1-9]\d*)$/.exec(String(stop.stopId??''));
+ if(match){
+  const rows=(await pool.query('SELECT id,do_number FROM collections WHERE id::text=$1',[match[1]])).rows;
+  const row=rows[0];
+  if(rows.length!==1||!row.do_number)throw new Error('Collection reference is missing or ambiguous');
+  if([stop.do_number,stop.doNumber,stop.orderRef].some(value=>value!=null&&String(value).trim()&&String(value).trim()!==row.do_number))throw new Error('Collection reference conflicts with its route stop');
+  return {...row,kind:'collections' as const};
+ }
+ const job=await routeJob(stop);
+ return job?{...job,kind:'jobs' as const}:null;
+}
 export async function plannedJobs(date:string){
  const plans=(await pool.query(`SELECT public_id,stop_arrivals FROM route_plans WHERE plan_date=$1 AND status='Planned'`,[date])).rows;
- const result=new Map<number,{id:number;doNumber:string;planId:string;stop:any}>();const ambiguous=new Set<number>();const issues:string[]=[];
- for(const p of plans)for(const stop of p.stop_arrivals){try{const j=await routeJob(stop);if(!j)continue;if(result.has(j.id)){ambiguous.add(j.id);issues.push(`${j.do_number}: appears more than once on planned routes`);}else result.set(j.id,{id:j.id,doNumber:j.do_number,planId:p.public_id,stop});}catch(e){issues.push(`${p.public_id} / ${stop.stopId}: ${(e as Error).message}`);}}
+ const result=new Map<string,{id:number;kind:NotificationSource;doNumber:string;planId:string;stop:any}>();const ambiguous=new Set<string>();const issues:string[]=[];
+ for(const p of plans)for(const stop of p.stop_arrivals){try{const j=await routeNotificationSource(stop);if(!j)continue;const key=j.kind+':'+j.id;if(result.has(key)){ambiguous.add(key);issues.push(`${j.do_number}: appears more than once on planned routes`);}else result.set(key,{id:j.id,kind:j.kind,doNumber:j.do_number,planId:p.public_id,stop});}catch(e){issues.push(`${p.public_id} / ${stop.stopId}: ${(e as Error).message}`);}}
  for(const id of ambiguous)result.delete(id);
  return{jobs:[...result.values()],issues};
 }

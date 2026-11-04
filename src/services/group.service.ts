@@ -61,10 +61,10 @@ export async function saveGroup(input: GroupInput, id?: string, version?: number
   if (members.rows.length !== input.memberIds.length || members.rows.some(u => u.role !== "customer")) throw new ApiError(400,"INVALID_MEMBERS","Every selected member must exist and have role customer. Refresh the customer list.");
   const templates = await client.query("SELECT id,event,channel,status,reminder_days_before,to_char(reminder_send_time,'HH24:MI') AS reminder_send_time FROM mealcart_message_templates WHERE id=ANY($1::varchar[]) FOR SHARE",[input.templateIds]);
   if (templates.rows.length !== input.templateIds.length) throw new ApiError(400,"INVALID_TEMPLATES","A selected template no longer exists. Refresh and try again.");
-  const matching=templates.rows.filter(t=>t.status==='Active'&&(t.channel===input.contact||t.channel==='Both')&&t.event!=='Scheduled Delivery Reminder');
-  if(new Set(matching.map(t=>t.event)).size!==matching.length)throw new ApiError(400,'DUPLICATE_EVENT_TEMPLATE','Select only one active matching template for each non-reminder delivery event');
-  const reminders=templates.rows.filter(t=>t.status==='Active'&&(t.channel===input.contact||t.channel==='Both')&&t.event==='Scheduled Delivery Reminder');
-  if(new Set(reminders.map(t=>`${t.reminder_days_before}|${t.reminder_send_time}`)).size!==reminders.length)throw new ApiError(400,'DUPLICATE_REMINDER_TIME','Select only one active reminder for each days-before/send-time combination');
+  const matching=templates.rows.filter(t=>t.status==='Active'&&t.event!=='Scheduled Delivery Reminder');
+  if(new Set(matching.map(t=>t.channel+":"+t.event)).size!==matching.length)throw new ApiError(400,'DUPLICATE_EVENT_TEMPLATE','Select only one active matching template per channel for each non-reminder delivery event');
+  const reminders=templates.rows.filter(t=>t.status==='Active'&&t.event==='Scheduled Delivery Reminder');
+  if(new Set(reminders.map(t=>`${t.channel}|${t.reminder_days_before}|${t.reminder_send_time}`)).size!==reminders.length)throw new ApiError(400,'DUPLICATE_REMINDER_TIME','Select only one active reminder per channel for each days-before/send-time combination');
   const values = [input.name,input.description,input.contact,input.status,input.recordTemperature,groupId];
   if (id) await client.query("UPDATE mealcart_customer_groups SET name=$1,description=$2,preferred_contact=$3,status=$4,record_temperature=$5,version=version+1,updated_at=NOW() WHERE id=$6", values);
   else await client.query("INSERT INTO mealcart_customer_groups (name,description,preferred_contact,status,record_temperature,id) VALUES ($1,$2,$3,$4,$5,$6)",values);
@@ -100,13 +100,13 @@ export async function saveTemplate(input: TemplateInput, id?: string) {
   const templateId = id ?? `TPL-${randomUUID()}`;
   if (id && !(await client.query("SELECT id FROM mealcart_message_templates WHERE id=$1",[id])).rows.length) throw new ApiError(404,"TEMPLATE_NOT_FOUND","Template not found.");
   const duplicate = await client.query(`SELECT id FROM mealcart_message_templates WHERE lower(trim(name))=lower(trim($1))
-   AND event=$2 AND (channel=$3 OR channel='Both' OR $3='Both') AND id<>$4`,[input.name,input.event,input.channel,templateId]);
+   AND event=$2 AND channel=$3 AND id<>$4`,[input.name,input.event,input.channel,templateId]);
   if (duplicate.rows.length) throw new ApiError(409,"TEMPLATE_EXISTS","A template with this name already exists for this event and channel.");
   if(input.status==='Active'){
    const conflict=(await client.query(`SELECT g.name FROM mealcart_group_templates own JOIN mealcart_customer_groups g ON g.id=own.group_id
     JOIN mealcart_group_templates other ON other.group_id=g.id JOIN mealcart_message_templates t ON t.id=other.template_id
     WHERE own.template_id=$1 AND t.id<>$1 AND t.event=$2 AND t.status='Active'
-    AND $3 IN (g.preferred_contact,'Both') AND t.channel IN (g.preferred_contact,'Both')
+    AND t.channel=$3
     AND ($2<>'Scheduled Delivery Reminder' OR (t.reminder_days_before=$4 AND t.reminder_send_time=$5::time)) LIMIT 1`,[templateId,input.event,input.channel,input.daysBefore??null,input.sendTime??null])).rows[0];
    if(conflict)throw new ApiError(409,'GROUP_TEMPLATE_CONFLICT',`This would duplicate another active message in group ${conflict.name}. Change that group's selection first`);
   }

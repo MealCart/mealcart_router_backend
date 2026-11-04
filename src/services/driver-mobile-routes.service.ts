@@ -1,3 +1,4 @@
+import {randomUUID} from 'node:crypto';
 import type {z} from "zod";
 import {offlineIdentitySchema} from "../validators/delivery-proof.validator.js";
 import { pool } from '../db/pool.js';
@@ -46,10 +47,14 @@ export async function completeDriverStop(driverId:string,planId:string,seq:numbe
    if(!offline && row.route_version!==version)throw new ApiError(409,'ROUTE_CHANGED','The route changed. Reload the order before completing it.');
    if(stop.status!=='Pending')throw new ApiError(409,'STOP_NOT_PENDING','Only a pending delivery or collection can be completed.');
    const m=/^STP-([JC])([1-9]\d*)$/.exec(stopId);
-   const source=m?(await c.query(`SELECT id FROM ${m[1]==='J'?'jobs':'collections'} WHERE id=$1`,[m[2]])).rows[0]:null;
+   const source=m?(await c.query(`SELECT id,do_number FROM ${m[1]==='J'?'jobs':'collections'} WHERE id=$1`,[m[2]])).rows[0]:null;
    if(!source)throw new ApiError(409,'ORDER_UNAVAILABLE','The source order is no longer available. Contact the office.');
    const completed={...stop,...(offline?{offlineRequestId:offline.requestId,offlineRecordedAt:offline.completedAt}:{}),status:'Completed',completedAt:new Date().toISOString(),completedByDriverId:driverId};
    await c.query(`UPDATE route_plans SET stop_arrivals=jsonb_set(stop_arrivals,$1::text[],$2::jsonb,false),route_version=route_version+1,updated_at=NOW() WHERE public_id=$3`,[`{${index}}`,JSON.stringify(completed),planId]);
+   if(source.do_number)await c.query(`INSERT INTO mealcart_completed_delivery_events
+    (completion_id,plan_id,plan_created_at,stop_seq,job_id,do_number,delivery_date,driver_id,driver_name,completed_at,source_kind)
+    VALUES($1,$2,$3,$4,$5,$6,$7,$8,COALESCE((SELECT name FROM drivers WHERE public_id=$8),'Mealcart driver'),$9,'collections')`,
+    [randomUUID(),planId,(row as any).plan_created_at,seq,source.id,source.do_number,row.plan_date,driverId,offline?.completedAt??completed.completedAt]);
   }
   await c.query('COMMIT');
  }catch(err){await c.query('ROLLBACK');throw err;}finally{c.release();}

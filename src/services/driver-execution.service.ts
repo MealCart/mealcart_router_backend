@@ -27,18 +27,19 @@ export async function failDriverStop(driverId:string,id:string,seq:number,input:
   await c.query('BEGIN');
   const p=(await c.query(`SELECT *,plan_date::text AS plan_date,created_at::timestamptz=$3::timestamptz AS snapshot_matches FROM route_plans WHERE public_id=$1 AND driver_id=$2 AND status='Planned' FOR UPDATE`,[id,driverId,input.planCreatedAt])).rows[0];
   if(!p||!p.snapshot_matches)throw new ApiError(409,'ROUTE_CHANGED','The saved route was replaced or reassigned. Failure report retained for office review');
-  const index=p.stop_arrivals.findIndex((s:any)=>s.seq===seq&&s.stopId===input.stopId),stop=p.stop_arrivals[index],match=/^STP-J([1-9]\d*)$/.exec(input.stopId);
-  if(!stop||!match)throw new ApiError(400,'DELIVERY_REQUIRED','Failure reporting is for delivery job stops only');
+  const index=p.stop_arrivals.findIndex((s:any)=>s.seq===seq&&s.stopId===input.stopId),stop=p.stop_arrivals[index],match=/^STP-([JC])([1-9]\d*)$/.exec(input.stopId);
+  if(!stop||!match)throw new ApiError(400,'DELIVERY_REQUIRED','Failure reporting requires a delivery or collection stop');
   const old=(await c.query('SELECT *,plan_created_at=$2::timestamptz AS snapshot_matches FROM mealcart_delivery_failures WHERE id=$1',[input.requestId,input.planCreatedAt])).rows[0];
   if(old){if(!old.snapshot_matches||old.plan_id!==id||old.driver_id!==driverId||old.stop_seq!==seq||old.stop_id!==input.stopId||old.reason!==input.reason)throw new ApiError(409,'REQUEST_CONFLICT','Failure receipt belongs to another report');await c.query('COMMIT');return getDriverRoute(driverId,id);}
   if(stop.status!=='Pending')throw new ApiError(409,'STOP_NOT_PENDING','This stop is already completed, failed or skipped');
   const at=Date.parse(input.recordedAt);if(at>Date.now()+300000||at<new Date(p.created_at).getTime()-86400000)throw new ApiError(409,'CLOCK_INVALID','Check the device clock; report retained');
-  const job=(await c.query('SELECT id,status FROM jobs WHERE id=$1 FOR UPDATE',[match[1]])).rows[0];
+  const source=match[1]==='J'?'jobs':'collections';
+  const job=(await c.query(`SELECT id,status,do_number FROM ${source} WHERE id=$1 FOR UPDATE`,[match[2]])).rows[0];
   if(!job||['completed','failed','cancelled','canceled'].includes(String(job.status).toLowerCase()))throw new ApiError(409,'JOB_CHANGED','Job is unavailable or no longer pending');
-  await c.query(`INSERT INTO mealcart_delivery_failures(id,plan_id,plan_created_at,stop_seq,stop_id,job_id,delivery_date,driver_id,reason,recorded_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,[input.requestId,id,input.planCreatedAt,seq,input.stopId,job.id,String(p.plan_date).slice(0,10),driverId,input.reason,input.recordedAt]);
+  await c.query(`INSERT INTO mealcart_delivery_failures(id,plan_id,plan_created_at,stop_seq,stop_id,job_id,delivery_date,driver_id,reason,recorded_at,source_kind,do_number) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,[input.requestId,id,input.planCreatedAt,seq,input.stopId,job.id,String(p.plan_date).slice(0,10),driverId,input.reason,input.recordedAt,source,job.do_number]);
   const updated={...stop,status:'Failed',failureRequestId:input.requestId,failureReason:input.reason,failedAt:input.recordedAt,failedByDriverId:driverId};
   await c.query(`UPDATE route_plans SET stop_arrivals=jsonb_set(stop_arrivals,$1::text[],$2::jsonb),route_version=route_version+1,updated_at=clock_timestamp() WHERE public_id=$3`,[`{${index}}`,JSON.stringify(updated),id]);
-  await c.query("UPDATE jobs SET status='failed' WHERE id=$1",[job.id]);
+  if(source==='jobs')await c.query("UPDATE jobs SET status='failed' WHERE id=$1",[job.id]);
   await c.query("UPDATE mealcart_route_execution SET next_eta_at=LEAST(next_eta_at,clock_timestamp()+interval '60 seconds') WHERE plan_id=$1 AND ended_at IS NULL",[id]);
   await c.query('COMMIT');return getDriverRoute(driverId,id);
  }catch(e){await c.query('ROLLBACK');throw e;}finally{c.release();}

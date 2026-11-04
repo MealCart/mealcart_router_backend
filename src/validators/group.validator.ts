@@ -16,7 +16,7 @@ export const updateGroupSchema = z.object({ ...groupFields, version: z.number().
 export type GroupInput = z.infer<typeof createGroupSchema>;
 export const templateSchema = z.object({
  name: z.string().trim().min(1).max(120), description: z.string().max(2000).default(""),
- channel: z.enum(["SMS", "Email", "Both"]), event: z.enum(deliveryEvents),
+ channel: z.enum(["SMS", "Email"]), event: z.enum(deliveryEvents),
  subject: z.string().max(500).default(""), body: z.string().trim().min(1).max(10000),
  status: z.enum(["Active", "Inactive"]),
  daysBefore: z.number().int().min(0).max(60).nullable().optional(),
