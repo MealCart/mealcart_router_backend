@@ -4,7 +4,7 @@ import {env} from '../config/env.js';
 import {messaging as cfg} from '../config/delivery-messaging.js';
 import {localClock} from '../lib/delivery-events.js';
 interface Point{lat:number;lng:number}
-const point=(p:Point)=>({location:{latLng:{latitude:p.lat,longitude:p.lng}}});
+const point=(p:Point)=>({location:{latLng:{latitude:Number(p.lat),longitude:Number(p.lng)}}});
 function valid(p:Point){return p.lat!=null&&p.lng!=null&&Number.isFinite(Number(p.lat))&&Number.isFinite(Number(p.lng))&&Math.abs(Number(p.lat))<=90&&Math.abs(Number(p.lng))<=180;}
 export async function refreshTrafficEtas(now=new Date()){
  const clock=localClock(now,cfg.DELIVERY_TIMEZONE);
@@ -34,8 +34,19 @@ export async function refreshTrafficEtas(now=new Date()){
     const chunk=waypoints.slice(offset,end),last=chunk.at(-1)!;
     const budget=await pool.query(`UPDATE mealcart_route_execution SET request_count=CASE WHEN request_day=$3::date THEN request_count+1 ELSE 1 END,request_day=$3::date WHERE plan_id=$1 AND plan_created_at=$2 AND (request_day IS DISTINCT FROM $3::date OR request_count<$4) RETURNING request_count`,[e.plan_id,e.plan_created_at,clock.date,cfg.ETA_MAX_REQUESTS_PER_ROUTE_DAY]);
     if(!budget.rowCount)throw new Error('Daily live ETA request cap reached');
-    const res=await fetch('https://routes.googleapis.com/directions/v2:computeRoutes',{method:'POST',headers:{'Content-Type':'application/json','X-Goog-Api-Key':env.GOOGLE_MAPS_API_KEY,'X-Goog-FieldMask':'routes.legs.duration'},body:JSON.stringify({origin:point(origin),destination:point(last.position),intermediates:chunk.slice(0,-1).map(w=>({...point(w.position),via:w.via})),travelMode:'DRIVE',routingPreference:'TRAFFIC_AWARE',optimizeWaypointOrder:false,departureTime:new Date(now.getTime()+elapsed*1000).toISOString()}),signal:AbortSignal.timeout(20000)});
-    if(!res.ok)throw new Error(`Google traffic routing rejected request (HTTP ${res.status})`);
+    // The first leg leaves now. Let Google use its request time so worker
+    // processing and network latency cannot make the departure time stale.
+    const projectedDeparture=now.getTime()+elapsed*1000;
+    const departure=offset>0&&projectedDeparture>Date.now()+30000
+     ? {departureTime:new Date(projectedDeparture).toISOString()} : {};
+    const res=await fetch('https://routes.googleapis.com/directions/v2:computeRoutes',{method:'POST',headers:{'Content-Type':'application/json','X-Goog-Api-Key':env.GOOGLE_MAPS_API_KEY,'X-Goog-FieldMask':'routes.legs.duration'},body:JSON.stringify({origin:point(origin),destination:point(last.position),intermediates:chunk.slice(0,-1).map(w=>({...point(w.position),via:w.via})),travelMode:'DRIVE',routingPreference:'TRAFFIC_AWARE',optimizeWaypointOrder:false,...departure}),signal:AbortSignal.timeout(20000)});
+    if(!res.ok){
+     const payload=await res.json().catch(()=>null) as {error?:{message?:unknown}}|null;
+     const message=payload?.error?.message;
+     const detail=typeof message==='string'
+      ? message.replaceAll(env.GOOGLE_MAPS_API_KEY,'[redacted]').slice(0,300) : '';
+     throw new Error(`Google traffic routing rejected request (HTTP ${res.status})${detail ? ': '+detail : ''}`);
+    }
     const data:any=await res.json(),legs=data.routes?.[0]?.legs,stops=chunk.filter(w=>!w.via);
     if(!Array.isArray(legs)||legs.length!==stops.length)throw new Error('Google traffic leg count did not match remaining stops');
     for(let i=0;i<stops.length;i++){const str=String(legs[i].duration??'');if(!/^\d+(\.\d+)?s$/.test(str))throw new Error('Google returned an invalid travel time');elapsed+=Math.ceil(parseFloat(str));arrivals.set(stops[i].id!,clock.seconds+elapsed);if(stops[i].id!=='__DEPOT__')elapsed+=Number(settings.stop_duration_minutes)*60;}
