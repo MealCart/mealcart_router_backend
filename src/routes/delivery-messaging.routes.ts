@@ -23,6 +23,29 @@ adminMessagingRouter.get('/delivery-messaging',asyncHandler(async(_req,res)=>{
  const executions=(await pool.query('SELECT plan_id,driver_id,started_at,eta_updated_at,last_error,request_count FROM mealcart_route_execution WHERE ended_at IS NULL ORDER BY started_at DESC LIMIT 100')).rows;
  res.json({ok:true,data:{enabled:messaging.NOTIFICATIONS_ENABLED,timeZone:messaging.DELIVERY_TIMEZONE,events:scheduledEvents,messages,health,executions,schedules:await listReminderSchedules()}});
 }));
+const logQuery=z.object({
+ channel:z.enum(['SMS','Email']).optional(),
+ status:z.enum(['issues','accepted','pending']).optional(),
+ page:z.coerce.number().int().min(1).max(100000).default(1),
+});
+adminMessagingRouter.get('/delivery-messaging/logs',asyncHandler(async(req,res)=>{
+ const parsed=logQuery.safeParse(req.query);
+ if(!parsed.success)throw new ApiError(400,'BAD_LOG_FILTER','Invalid notification log filter');
+ const {channel,status,page}=parsed.data;
+ const statuses=status==='issues'?['failed','blocked','unknown','cancelled']:
+  status==='accepted'?['accepted']:status==='pending'?['queued','sending']:null;
+ const pageSize=25;
+ const {rows}=await pool.query(
+  `SELECT id,job_id,do_number,source_kind,event,channel,status,detail,provider_id,
+          created_at,attempted_at,accepted_at
+   FROM mealcart_delivery_messages
+   WHERE ($1::text IS NULL OR channel=$1) AND ($2::text[] IS NULL OR status=ANY($2))
+   ORDER BY created_at DESC,id DESC LIMIT $3 OFFSET $4`,
+  [channel??null,statuses,pageSize+1,(page-1)*pageSize],
+ );
+ res.set('Cache-Control','no-store');
+ res.json({ok:true,data:{rows:rows.slice(0,pageSize),hasMore:rows.length>pageSize}});
+}));
 adminMessagingRouter.get('/delivery-messaging/jobs',asyncHandler(async(req,res)=>{
  const date=String(req.query.date??'');if(!/^\d{4}-\d{2}-\d{2}$/.test(date))throw new ApiError(400,'BAD_DATE','Use YYYY-MM-DD');
  const planned=await plannedJobs(date);
