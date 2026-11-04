@@ -28,16 +28,15 @@ export async function refreshTrafficEtas(now=new Date()){
    }
    let origin:Point={lat:Number(gps.lat),lng:Number(gps.lng)},elapsed=0;
    const arrivals=new Map<string,number>();let offset=0;
-   while(offset<waypoints.length){
-    // At most 25 intermediates. End each chunk at a stopover (not a via).
-    let end=Math.min(offset+26,waypoints.length);while(end>offset&&waypoints[end-1].via)end--;if(end<=offset)throw new Error('Too many consecutive road via points');
-    const chunk=waypoints.slice(offset,end),last=chunk.at(-1)!;
+   type Waypoint=(typeof waypoints)[number];
+   async function requestLegs(chunk:Waypoint[], allowProjectedDeparture:boolean){
+    const last=chunk.at(-1)!;
     const budget=await pool.query(`UPDATE mealcart_route_execution SET request_count=CASE WHEN request_day=$3::date THEN request_count+1 ELSE 1 END,request_day=$3::date WHERE plan_id=$1 AND plan_created_at=$2 AND (request_day IS DISTINCT FROM $3::date OR request_count<$4) RETURNING request_count`,[e.plan_id,e.plan_created_at,clock.date,cfg.ETA_MAX_REQUESTS_PER_ROUTE_DAY]);
     if(!budget.rowCount)throw new Error('Daily live ETA request cap reached');
     // The first leg leaves now. Let Google use its request time so worker
     // processing and network latency cannot make the departure time stale.
     const projectedDeparture=now.getTime()+elapsed*1000;
-    const departure=offset>0&&projectedDeparture>Date.now()+30000
+    const departure=allowProjectedDeparture&&projectedDeparture>Date.now()+30000
      ? {departureTime:new Date(projectedDeparture).toISOString()} : {};
     const res=await fetch('https://routes.googleapis.com/directions/v2:computeRoutes',{method:'POST',headers:{'Content-Type':'application/json','X-Goog-Api-Key':env.GOOGLE_MAPS_API_KEY,'X-Goog-FieldMask':'routes.legs.duration'},body:JSON.stringify({origin:point(origin),destination:point(last.position),intermediates:chunk.slice(0,-1).map(w=>({...point(w.position),via:w.via})),travelMode:'DRIVE',routingPreference:'TRAFFIC_AWARE',optimizeWaypointOrder:false,...departure}),signal:AbortSignal.timeout(20000)});
     if(!res.ok){
@@ -47,10 +46,42 @@ export async function refreshTrafficEtas(now=new Date()){
       ? message.replaceAll(env.GOOGLE_MAPS_API_KEY,'[redacted]').slice(0,300) : '';
      throw new Error(`Google traffic routing rejected request (HTTP ${res.status})${detail ? ': '+detail : ''}`);
     }
-    const data:any=await res.json(),legs=data.routes?.[0]?.legs,stops=chunk.filter(w=>!w.via);
-    if(!Array.isArray(legs)||legs.length!==stops.length)throw new Error('Google traffic leg count did not match remaining stops');
-    for(let i=0;i<stops.length;i++){const str=String(legs[i].duration??'');if(!/^\d+(\.\d+)?s$/.test(str))throw new Error('Google returned an invalid travel time');elapsed+=Math.ceil(parseFloat(str));arrivals.set(stops[i].id!,clock.seconds+elapsed);if(stops[i].id!=='__DEPOT__')elapsed+=Number(settings.stop_duration_minutes)*60;}
-    origin=last.position;offset=end;
+    const data:any=await res.json();
+    return data.routes?.[0]?.legs;
+   }
+   function recordArrival(stop:Waypoint, leg:{duration?:string}){
+    const duration=String(leg?.duration??'');
+    if(!/^\d+(\.\d+)?s$/.test(duration))throw new Error('Google returned an invalid travel time');
+    elapsed+=Math.ceil(parseFloat(duration));
+    arrivals.set(stop.id!,clock.seconds+elapsed);
+    if(stop.id!=='__DEPOT__')elapsed+=Number(settings.stop_duration_minutes)*60;
+    origin=stop.position;
+   }
+   while(offset<waypoints.length){
+    // At most 25 intermediates. End each chunk at a stopover (not a via).
+    let end=Math.min(offset+26,waypoints.length);while(end>offset&&waypoints[end-1].via)end--;if(end<=offset)throw new Error('Too many consecutive road via points');
+    const chunk=waypoints.slice(offset,end);
+    const stops=chunk.filter(w=>!w.via);
+    const legs=await requestLegs(chunk,offset>0);
+    if(Array.isArray(legs)&&legs.length===stops.length){
+     stops.forEach((stop,index)=>recordArrival(stop,legs[index]));
+    }else{
+     // Retry with an explicit destination per request so a mismatched
+     // multi-stop response cannot shift ETAs onto the wrong deliveries.
+     let segment:Waypoint[]=[];
+     for(const waypoint of chunk){
+      segment.push(waypoint);
+      if(waypoint.via)continue;
+      const single=stops.length===1?legs:await requestLegs(segment,arrivals.size>0);
+      if(!Array.isArray(single)||single.length!==1){
+       const count=Array.isArray(single)?single.length:0;
+       throw new Error(`Google returned ${count} route legs for stop ${waypoint.id} (expected 1; ${segment.length-1} via points)`);
+      }
+      recordArrival(waypoint,single[0]);
+      segment=[];
+     }
+    }
+    offset=end;
    }
    const updated=e.stop_arrivals.map((s:any)=>arrivals.has(s.stopId)?{...s,liveEtaSeconds:arrivals.get(s.stopId),liveEtaUpdatedAt:now.toISOString(),liveEtaSource:'Google traffic'}:s);
    // No plan version bump for timing alone; immutable stop identities and proof remain valid.
