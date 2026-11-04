@@ -1,3 +1,4 @@
+import {routeExecution} from '../services/driver-execution.service.js';
 import {mobileExecutionRouter} from "./delivery-messaging.routes.js";
 import {driverKeyRouter} from './driver-key.routes.js';
 import {mobileLocationRouter} from "./driver-location.routes.js";
@@ -25,6 +26,17 @@ driverMobileRouter.post('/auth/login',validateBody(loginSchema),asyncHandler(asy
  res.setHeader('Cache-Control','no-store');res.json({ok:true,data:result});
 }));
 driverMobileRouter.use(driverMobileAuth);
+driverMobileRouter.post([
+ '/routes/:id/stops/:seq/scan',
+ '/routes/:id/stops/:seq/proof',
+ '/routes/:id/stops/:seq/complete',
+ '/routes/:id/stops/:seq/fail',
+], asyncHandler(async (req, res, next) => {
+ const execution = await routeExecution(res.locals.driver.id, req.params.id);
+ // An already-started route can still receive work queued offline before it ended.
+ if (!execution.started_at) throw new ApiError(409, 'ROUTE_NOT_STARTED', 'Start the route before working on its stops.');
+ next();
+}));
 driverMobileRouter.use(mobileExecutionRouter);
 driverMobileRouter.use(driverKeyRouter);
 driverMobileRouter.use(mobileLocationRouter);

@@ -4,7 +4,7 @@ import {localClock} from '../lib/delivery-events.js';
 import {messaging as cfg} from '../config/delivery-messaging.js';
 import {getDriverRoute} from './driver-mobile-routes.service.js';
 export async function routeExecution(driverId:string,id:string){
- const result=(await pool.query(`SELECT e.started_at,e.ended_at,e.eta_updated_at,e.last_error,e.request_count FROM route_plans p LEFT JOIN mealcart_route_execution e ON e.plan_id=p.public_id AND e.plan_created_at=p.created_at::timestamptz WHERE p.public_id=$1 AND p.driver_id=$2 AND p.status='Planned'`,[id,driverId])).rows[0];
+ const result=(await pool.query(`SELECT to_char(p.created_at::timestamptz AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS plan_created_at,e.started_at,e.ended_at,e.eta_updated_at,e.last_error,e.request_count FROM route_plans p LEFT JOIN mealcart_route_execution e ON e.plan_id=p.public_id AND e.plan_created_at=p.created_at::timestamptz AND e.driver_id=p.driver_id WHERE p.public_id=$1 AND p.driver_id=$2 AND p.status='Planned'`,[id,driverId])).rows[0];
  if(!result)throw new ApiError(404,'ROUTE_NOT_FOUND','Route unavailable');return result;
 }
 export async function startRouteExecution(driverId:string,id:string,createdAt:string){
