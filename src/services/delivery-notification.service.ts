@@ -30,7 +30,8 @@ export async function notificationContext(
  if(templates.length!==1)return{problem:templates.length?'Multiple assigned templates match this event and channel':'No active assigned template for this event and channel',job};
  job.source_kind=source;
  job.recipient_name=String(job.job.recipient_name??'').trim();
- job.recipient_phone=String(job.job.recipient_phon??'').trim();
+ // Current bookings use recipient_phone. Older records may use recipient_phon.
+ job.recipient_phone=String(job.job.recipient_phone??'').trim()||String(job.job.recipient_phon??'').trim();
  job.recipient_email=String(job.job.recipient_email??'').trim();
  try{
   const recipient=channel==='SMS'?phoneE164(job.recipient_phone):job.recipient_email;
