@@ -1,4 +1,4 @@
-export const scheduledEvents=['Scheduled Delivery Reminder','Delivery ETA — One Hour','Delivery Failed','Delivery Completed'] as const;
+export const scheduledEvents=['Scheduled Delivery Reminder','Delivery ETA — One Hour','Delivery Failed','Delivery Completed','Daily Schedule Update'] as const;
 export function localClock(now:Date,timeZone:string){
  const p=Object.fromEntries(new Intl.DateTimeFormat('en-CA',{timeZone,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'}).formatToParts(now).map(p=>[p.type,p.value]));
  return{date:`${p.year}-${p.month}-${p.day}`,seconds:Number(p.hour)*3600+Number(p.minute)*60+Number(p.second)};

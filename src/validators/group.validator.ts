@@ -1,5 +1,5 @@
 import { z } from "zod";
-export const deliveryEvents = ["Scheduled Delivery Reminder", "Delivery ETA — One Hour", "Delivery Failed", "Delivery Completed"] as const;
+export const deliveryEvents = ["Scheduled Delivery Reminder", "Delivery ETA — One Hour", "Delivery Failed", "Delivery Completed", "Daily Schedule Update"] as const;
 const unique = (values: string[]) => new Set(values).size === values.length;
 const userId = z.string().regex(/^[1-9]\d*$/).refine(v => Number.isSafeInteger(Number(v)) && Number(v) <= 2147483647, "Invalid customer ID");
 const groupFields = {
@@ -25,7 +25,10 @@ export const templateSchema = z.object({
  if(value.event==='Scheduled Delivery Reminder'){
   if(value.daysBefore==null)ctx.addIssue({code:z.ZodIssueCode.custom,path:['daysBefore'],message:'Days before delivery is required'});
   if(!value.sendTime)ctx.addIssue({code:z.ZodIssueCode.custom,path:['sendTime'],message:'Reminder send time is required'});
- }else if(value.daysBefore!=null||value.sendTime!=null)ctx.addIssue({code:z.ZodIssueCode.custom,path:['event'],message:'Timing applies only to Scheduled Delivery Reminder'});
+ }else if(value.event==='Daily Schedule Update'){
+  if(value.daysBefore!=null)ctx.addIssue({code:z.ZodIssueCode.custom,path:['daysBefore'],message:'Daily updates always use the scheduled day'});
+  if(!value.sendTime)ctx.addIssue({code:z.ZodIssueCode.custom,path:['sendTime'],message:'Daily send time is required'});
+ }else if(value.daysBefore!=null||value.sendTime!=null)ctx.addIssue({code:z.ZodIssueCode.custom,path:['event'],message:'Timing applies only to scheduled reminders and daily updates'});
  if (value.channel !== "SMS" && !value.subject.trim()) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["subject"], message: "Email subject is required" });
 });
 export type TemplateInput = z.infer<typeof templateSchema>;

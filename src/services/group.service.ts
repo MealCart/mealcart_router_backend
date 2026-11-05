@@ -110,7 +110,7 @@ export async function saveTemplate(input: TemplateInput, id?: string) {
     AND ($2<>'Scheduled Delivery Reminder' OR (t.reminder_days_before=$4 AND t.reminder_send_time=$5::time)) LIMIT 1`,[templateId,input.event,input.channel,input.daysBefore??null,input.sendTime??null])).rows[0];
    if(conflict)throw new ApiError(409,'GROUP_TEMPLATE_CONFLICT',`This would duplicate another active message in group ${conflict.name}. Change that group's selection first`);
   }
-  const values = [input.name,input.description,input.channel,input.event,input.channel==='SMS'?'':input.subject,input.body,input.status,templateId,input.event==='Scheduled Delivery Reminder'?input.daysBefore:null,input.event==='Scheduled Delivery Reminder'?input.sendTime:null];
+  const values = [input.name,input.description,input.channel,input.event,input.channel==='SMS'?'':input.subject,input.body,input.status,templateId,input.event==='Scheduled Delivery Reminder'?input.daysBefore:null,['Scheduled Delivery Reminder','Daily Schedule Update'].includes(input.event)?input.sendTime:null];
   if (id) await client.query("UPDATE mealcart_message_templates SET name=$1,description=$2,channel=$3,event=$4,subject=$5,body=$6,status=$7,reminder_days_before=$9,reminder_send_time=$10,updated_at=NOW() WHERE id=$8",values);
   else await client.query("INSERT INTO mealcart_message_templates (name,description,channel,event,subject,body,status,id,reminder_days_before,reminder_send_time) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",values);
   // Assignments can only be changed by saveGroup, never by template edits.
