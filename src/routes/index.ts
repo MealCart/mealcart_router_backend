@@ -1,3 +1,4 @@
+import {customerTrackingRouter} from "./customer-tracking.routes.js";
 import {adminMessagingRouter} from "./delivery-messaging.routes.js";
 import {adminLocationRouter} from "./driver-location.routes.js";
 import {adminProofRouter} from "./delivery-proof.routes.js";
@@ -22,6 +23,7 @@ import { keyRouter } from "./key.routes.js";
 export const apiRouter = Router();
 
 apiRouter.use(healthRouter);
+apiRouter.use("/public-tracking",customerTrackingRouter);
 apiRouter.use("/driver-mobile",driverMobileRouter);
 apiRouter.use(requireTrustedOrigin);
 apiRouter.use(authRouter);

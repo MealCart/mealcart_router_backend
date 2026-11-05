@@ -1,3 +1,4 @@
+import {getOrCreateTrackingLink} from './customer-tracking.service.js';
 import {ApiError} from '../types/api.types.js';
 import {randomUUID} from 'node:crypto';
 import {pool} from '../db/pool.js';
@@ -99,7 +100,7 @@ async function isEligible(jobId:number,event:string,date:string,now:Date,schedul
 }
 function messageData(c:Eligible,date:string){
  const job=c.job.job,arrival=Number(c.live?.stop.liveEtaSeconds),name=c.job.recipient_name||'Recipient';
- return{customer_name:name,recipient_name:name,recipient_phone:c.job.recipient_phone,recipient_email:c.job.recipient_email,order_id:String(job.do_number),driver_name:c.completion?.driver_name??c.live?.driver_name??'Mealcart driver',delivery_date:date,estimated_arrival:Number.isFinite(arrival)?`${String(Math.floor(arrival/3600)%24).padStart(2,'0')}:${String(Math.floor(arrival/60)%60).padStart(2,'0')} (${cfg.DELIVERY_TIMEZONE})`:'To be confirmed',service_type:c.job.source_kind==='collections'?'collection':'delivery',delivery_address:String(job.delivery_address??job.collection_address??''),company_name:'Mealcart',failure_reason:String(c.reason??''),completed_at:c.completion?new Intl.DateTimeFormat('en-AU',{timeZone:cfg.DELIVERY_TIMEZONE,dateStyle:'medium',timeStyle:'short'}).format(new Date(c.completion.completed_at))+' ('+cfg.DELIVERY_TIMEZONE+')':''};
+ return{tracking_link:"{{tracking_link}}",customer_name:name,recipient_name:name,recipient_phone:c.job.recipient_phone,recipient_email:c.job.recipient_email,order_id:String(job.do_number),driver_name:c.completion?.driver_name??c.live?.driver_name??'Mealcart driver',delivery_date:date,estimated_arrival:Number.isFinite(arrival)?`${String(Math.floor(arrival/3600)%24).padStart(2,'0')}:${String(Math.floor(arrival/60)%60).padStart(2,'0')} (${cfg.DELIVERY_TIMEZONE})`:'To be confirmed',service_type:c.job.source_kind==='collections'?'collection':'delivery',delivery_address:String(job.delivery_address??job.collection_address??''),company_name:'Mealcart',failure_reason:String(c.reason??''),completed_at:c.completion?new Intl.DateTimeFormat('en-AU',{timeZone:cfg.DELIVERY_TIMEZONE,dateStyle:'medium',timeStyle:'short'}).format(new Date(c.completion.completed_at))+' ('+cfg.DELIVERY_TIMEZONE+')':''};
 }
 export async function enqueueNotice(jobId:number,date:string,event:string,now=new Date(),scheduleKey='',channel:NotificationChannel='SMS',source:NotificationSource='jobs'){
  if(event===DAILY_EVENT)scheduleKey='daily';
@@ -180,7 +181,12 @@ export async function dispatchNotices(now?:Date){
  for(const row of rows){
   const sendAt=now??new Date(),date=String(row.delivery_date).slice(0,10),context=await isEligible(row.job_id,row.event,date,sendAt,row.schedule_key,row.channel,row.source_kind);
   if(row.recipient_source!==row.source_kind||context.problem||context.template?.id!==row.template_id||context.job?.job.do_number!==row.do_number||context.recipient!==row.recipient||context.job?.group_id!==row.group_id){await pool.query(`UPDATE mealcart_delivery_messages SET status='cancelled',detail=$2 WHERE id=$1`,[row.id,context.problem||'Job recipient, reference, group or template changed; cancelled for review']);continue;}
-  const vars=messageData(context,date);let subject:string,body:string;try{subject=renderMessage(context.template.subject,vars);body=renderMessage(context.template.body,vars);}catch(error){await pool.query("UPDATE mealcart_delivery_messages SET status='blocked',detail=$2 WHERE id=$1",[row.id,(error as Error).message]);continue;}
+  let subject:string,body:string;try{
+   const vars=messageData(context,date);
+   if(/\{\{\s*tracking_link\s*\}\}/.test(context.template.subject+' '+context.template.body)){
+    vars.tracking_link=await getOrCreateTrackingLink({source:row.source_kind,id:row.job_id,reference:context.job.job.do_number,customerId:String(context.job.customer_id),recipientPhone:context.job.recipient_phone,recipientEmail:context.job.recipient_email,date},sendAt);
+   }
+   subject=renderMessage(context.template.subject,vars);body=renderMessage(context.template.body,vars);}catch(error){await pool.query("UPDATE mealcart_delivery_messages SET status='blocked',detail=$2 WHERE id=$1",[row.id,(error as Error).message]);continue;}
   const claim=await pool.query(`UPDATE mealcart_delivery_messages SET status='sending',attempted_at=$2,subject=$3,body=$4,lead_seconds=$5,detail='' WHERE id=$1 AND status IN ('queued','blocked') RETURNING id`,[row.id,sendAt.toISOString(),subject,body,context.lead??null]);if(!claim.rowCount)continue;
   try{const providerId=await sendNotification({...row,subject,body});await pool.query(`UPDATE mealcart_delivery_messages SET status='accepted',provider_id=$2,accepted_at=clock_timestamp(),detail='Provider accepted; this is not a confirmed delivery receipt' WHERE id=$1`,[row.id,providerId]);}catch(error){const e=error instanceof ProviderFailure?error:new ProviderFailure('unknown','Unexpected provider interruption; check provider console');await pool.query('UPDATE mealcart_delivery_messages SET status=$2,detail=$3 WHERE id=$1',[row.id,e.disposition,e.message]);}
  }
