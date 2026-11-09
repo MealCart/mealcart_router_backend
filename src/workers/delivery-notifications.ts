@@ -1,8 +1,9 @@
+import {dispatchPalletEmails} from '../services/pallet-email.service.js';
 import {pool} from '../db/pool.js';
 import {messaging} from '../config/delivery-messaging.js';
 import {refreshTrafficEtas} from '../services/traffic-eta.service.js';
 import {discoverNotices,dispatchNotices} from '../services/delivery-notification.service.js';
-export async function notificationTick(){
+async function palletBaseNotificationTick(){
  const c=await pool.connect();let locked=false;
  try{locked=(await c.query('SELECT pg_try_advisory_lock(740321,10) AS locked')).rows[0].locked;if(!locked)return;
   if(messaging.NOTIFICATIONS_ENABLED){await discoverNotices();await dispatchNotices();await refreshTrafficEtas();await discoverNotices();await dispatchNotices();}
@@ -16,3 +17,8 @@ async function main(){
  await pool.end();
 }
 void main().catch(()=>{console.error('Delivery notification worker failed');process.exitCode=1;});
+
+export async function notificationTick(){
+ await palletBaseNotificationTick();
+ await dispatchPalletEmails().catch(error=>{console.error('Pallet email processing failed:',error instanceof Error?error.message:'Unknown error');});
+}

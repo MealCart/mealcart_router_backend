@@ -1,3 +1,4 @@
+import {palletRouter,mobilePalletRouter} from './pallet.routes.js';
 import {customerTrackingRouter} from "./customer-tracking.routes.js";
 import {adminMessagingRouter} from "./delivery-messaging.routes.js";
 import {adminLocationRouter} from "./driver-location.routes.js";
@@ -24,10 +25,12 @@ export const apiRouter = Router();
 
 apiRouter.use(healthRouter);
 apiRouter.use("/public-tracking",customerTrackingRouter);
+apiRouter.use("/driver-mobile/pallets",mobilePalletRouter);
 apiRouter.use("/driver-mobile",driverMobileRouter);
 apiRouter.use(requireTrustedOrigin);
 apiRouter.use(authRouter);
 apiRouter.use(authMiddleware);
+apiRouter.use(palletRouter);
 
 apiRouter.use(routeRouter);
 apiRouter.use(depotRouter);
