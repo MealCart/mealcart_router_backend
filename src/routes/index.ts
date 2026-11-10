@@ -1,3 +1,4 @@
+import {completionRepairRouter} from './completion-repair.routes.js';
 import {palletRouter,mobilePalletRouter} from './pallet.routes.js';
 import {customerTrackingRouter} from "./customer-tracking.routes.js";
 import {adminMessagingRouter} from "./delivery-messaging.routes.js";
@@ -30,6 +31,7 @@ apiRouter.use("/driver-mobile",driverMobileRouter);
 apiRouter.use(requireTrustedOrigin);
 apiRouter.use(authRouter);
 apiRouter.use(authMiddleware);
+apiRouter.use(completionRepairRouter);
 apiRouter.use(palletRouter);
 
 apiRouter.use(routeRouter);

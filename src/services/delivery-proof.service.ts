@@ -1,3 +1,5 @@
+// Completion consistency repair v1
+import {repairRouteReceipt,canAttachMissingProof} from './completion-reconciliation.service.js';
 import type {PoolClient} from 'pg';
 import {pool} from '../db/pool.js';
 import {ApiError} from '../types/api.types.js';
@@ -17,13 +19,15 @@ async function context(c:PoolClient,driverId:string,planId:string,seq:number,loc
 function codes(job:any){try{return expectedBarcodes(job.barcodes);}catch(err){throw new ApiError(409,'BARCODES_NOT_CONFIGURED',(err as Error).message);}}
 async function scans(c:PoolClient,plan:any,seq:number,jobId:number,driverId:string){return(await c.query('SELECT barcode,scanned_at,driver_id FROM mealcart_parcel_scans WHERE plan_id=$1 AND plan_created_at=$2 AND stop_seq=$3 AND job_id=$4 AND driver_id=$5',[plan.public_id,plan.created_at,seq,jobId,driverId])).rows;}
 export async function parcelState(driverId:string,planId:string,seq:number){
- return transaction(async c=>{const{plan,stop,job}=await context(c,driverId,planId,seq,true);
+ return transaction(async c=>{const{plan,stop,index,job}=await context(c,driverId,planId,seq,true);
+ const repaired=await repairRouteReceipt(c,plan,stop,index,job);
  const completion=(await c.query('SELECT id,photos,signature_url,completed_at FROM mealcart_delivery_completions WHERE plan_id=$1 AND plan_created_at=$2 AND stop_seq=$3',[planId,plan.created_at,seq])).rows[0];
  let expected:string[]=[],configurationError='';try{expected=codes(job);}catch(err){configurationError=(err as Error).message;}
- const recorded=await scans(c,plan,seq,job.id,driverId);const known=new Map(recorded.map(r=>[r.barcode,r]));
+ const recorded:{barcode:string;scanned_at:Date|string}[]=repaired?(repaired.expected_barcodes??[]).map((barcode:string)=>({barcode,scanned_at:repaired.completed_at})):await scans(c,plan,seq,job.id,driverId);const known=new Map(recorded.map(r=>[r.barcode,r]));
  return{stopId:stop.stopId,doNumber:String(job.do_number??''),planCreatedAt:plan.created_at,version:plan.route_version,status:stop.status,configurationError,
  barcodes:expected.map(barcode=>({barcode,status:known.has(barcode)?'Completed':'Pending',scannedAt:known.get(barcode)?.scanned_at??null})),
  scannedCount:expected.filter(code=>known.has(code)).length,totalCount:expected.length,
+ proofRetryAllowed:stop.status==='Pending'&&await canAttachMissingProof(c,job),
  proof:completion?{completionId:completion.id,photos:completion.photos,signatureUrl:completion.signature_url,completedAt:completion.completed_at}:null};});
 }
 export async function scanParcel(driverId:string,planId:string,seq:number,input:{stopId:string;doNumber:string;barcode:string}){
@@ -42,8 +46,9 @@ export async function completeWithProof(driverId:string,planId:string,seq:number
   if(stop.stopId!==input.stopId||String(job.do_number??'')!==input.doNumber)throw new ApiError(409,'ORDER_CHANGED','The assigned order changed. Reload it.');
   if(input.offline && input.offline.planCreatedAt!==plan.created_at)throw new ApiError(409,'OFFLINE_ROUTE_REPLACED','The saved route was deleted or replaced. Your offline proof needs office review.');
   const receipt=(await c.query(`SELECT *,to_char(plan_created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS plan_created_at FROM mealcart_delivery_completions WHERE id=$1`,[input.requestId])).rows[0];
-  if(receipt){if(receipt.driver_id!==driverId||receipt.plan_id!==planId||receipt.stop_seq!==seq||receipt.job_id!==job.id||String(receipt.plan_created_at)!==String(plan.created_at))throw new ApiError(409,'REQUEST_CONFLICT','This completion request belongs to another order.');await c.query('COMMIT');committed=true;return parcelState(driverId,planId,seq);}
-  if(stop.status!=='Pending'||job.status==='completed')throw new ApiError(409,'ALREADY_COMPLETED','This job or stop is already completed or no longer pending. Reload its status.');
+  if(receipt){await repairRouteReceipt(c,plan,stop,index,job);if(receipt.driver_id!==driverId||receipt.plan_id!==planId||receipt.stop_seq!==seq||receipt.job_id!==job.id||String(receipt.plan_created_at)!==String(plan.created_at))throw new ApiError(409,'REQUEST_CONFLICT','This completion request belongs to another order.');await c.query('COMMIT');committed=true;return parcelState(driverId,planId,seq);}
+  await repairRouteReceipt(c,plan,stop,index,job);
+  if(stop.status!=='Pending'||!await canAttachMissingProof(c,job))throw new ApiError(409,'ALREADY_COMPLETED','The server has a conflicting completed job or stop. Your saved photos and signature have not synced. Ask the office to review this delivery.');
   if(!input.offline && plan.route_version!==input.version)throw new ApiError(409,'ROUTE_CHANGED','The route changed. Reload before completing this order.');
   const expected=codes(job);
   if(input.offline){
