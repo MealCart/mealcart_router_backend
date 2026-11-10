@@ -90,3 +90,20 @@ export async function commitRouteTransfer(token:string,actorId:string){
   await c.query('UPDATE mealcart_route_transfer_previews SET applied_at=clock_timestamp(),receipt=$2::jsonb WHERE id=$1',[token,JSON.stringify(receipt)]);await c.query('COMMIT');return receipt;
  }catch(e){await c.query('ROLLBACK');if(['55P03','40P01','40001'].includes(String((e as {code?:string}).code)))throw error('A driver or another planner is updating these routes. Recalculate and try again.');throw e;}finally{c.release();}
 }
+
+/** Release exactly the selected saved routes together; keep delivery proof and an audit snapshot. */
+export async function deleteSelectedRoutes(input:{requestId:string;routes:{id:string;version:number}[]},actorId:string){
+ const c=await pool.connect();const signature=JSON.stringify([...input.routes].sort((a,b)=>a.id.localeCompare(b.id)));
+ const replay=async()=>{const event=(await c.query('SELECT * FROM mealcart_route_transfer_events WHERE id=$1',[input.requestId])).rows[0];if(!event)return null;const before=event.before_routes;if(event.actor_id!==actorId||before?.operation!=='delete'||before.signature!==signature)throw error('This deletion request belongs to a different action. Refresh and try again.');return{deletedIds:before.routes.map((p:any)=>p.public_id)};};
+ try{
+  await c.query('BEGIN');await c.query("SET LOCAL lock_timeout='5s'");const existing=await replay();if(existing){await c.query('COMMIT');return existing;}
+  const ids=input.routes.map(r=>r.id);const owners=(await c.query('SELECT driver_id FROM route_plans WHERE public_id=ANY($1::text[])',[ids])).rows;
+  await c.query('SELECT public_id FROM drivers WHERE public_id=ANY($1::text[]) ORDER BY public_id FOR UPDATE',[owners.map((r:any)=>r.driver_id)]);
+  await c.query('LOCK TABLE route_plans IN EXCLUSIVE MODE');const again=await replay();if(again){await c.query('COMMIT');return again;}
+  const plans=(await c.query('SELECT *,plan_date::text AS plan_date FROM route_plans WHERE public_id=ANY($1::text[]) ORDER BY public_id',[ids])).rows;
+  if(plans.length!==ids.length||new Set(plans.map((p:any)=>p.plan_date)).size!==1||plans.some((p:any)=>input.routes.find(r=>r.id===p.public_id)?.version!==p.route_version))throw error('One of the selected routes changed or was deleted. Refresh before deleting.');
+  await c.query('INSERT INTO mealcart_route_transfer_events(id,actor_id,plan_date,before_routes,after_routes) VALUES($1,$2,$3,$4::jsonb,$5::jsonb)',[input.requestId,actorId,plans[0].plan_date,JSON.stringify({operation:'delete',signature,routes:plans}),JSON.stringify([])]);
+  await c.query('UPDATE mealcart_route_execution SET ended_at=clock_timestamp() WHERE plan_id=ANY($1::text[]) AND ended_at IS NULL',[ids]);
+  await c.query('DELETE FROM route_plans WHERE public_id=ANY($1::text[])',[ids]);await c.query('COMMIT');return{deletedIds:plans.map((p:any)=>p.public_id)};
+ }catch(e){await c.query('ROLLBACK');if(['55P03','40P01','40001'].includes(String((e as {code?:string}).code)))throw error('These routes are being updated. Refresh and try deleting again.');throw e;}finally{c.release();}
+}

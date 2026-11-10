@@ -3,7 +3,7 @@ import {Router} from 'express';
 import {z} from 'zod';
 import {asyncHandler} from '../utils/async-handler.js';
 import {ApiError} from '../types/api.types.js';
-import {routeTransferState,previewRouteTransfer,commitRouteTransfer} from '../services/route-transfer.service.js';
+import {routeTransferState,previewRouteTransfer,commitRouteTransfer,deleteSelectedRoutes} from '../services/route-transfer.service.js';
 const schema=z.object({routes:z.array(z.object({id:z.string().min(1).max(40),version:z.number().int().min(0),jobIds:z.array(z.string().regex(/^STP-[JC][1-9]\d*$/)).max(1000)}).strict()).min(1).max(2)}).strict().refine(v=>new Set(v.routes.map(r=>r.id)).size===v.routes.length,'Choose different routes.');
 const valid=<S extends z.ZodTypeAny>(s:S,v:unknown):z.infer<S>=>{const r=s.safeParse(v);if(!r.success)throw new ApiError(400,'INVALID_TRANSFER',r.error.issues.map(i=>i.message).join('; '));return r.data;};
 export const routeTransferRouter=Router();
@@ -12,3 +12,5 @@ routeTransferRouter.get('/route-transfers/state',asyncHandler(async(req,res)=>{c
 const previewLimit=rateLimit({windowMs:60000,limit:Math.max(1,Number(process.env.ROUTE_RATE_LIMIT_PER_MIN)||30),standardHeaders:'draft-7',legacyHeaders:false,keyGenerator:(_req,res)=>String(res.locals.user.id),message:{ok:false,error:{code:'TRANSFER_RATE_LIMIT',message:'Please wait a minute before recalculating more routes.'}}});
 routeTransferRouter.post('/route-transfers/preview',previewLimit,asyncHandler(async(req,res)=>{res.json({ok:true,data:await previewRouteTransfer(valid(schema,req.body),String(res.locals.user.id))});}));
 routeTransferRouter.post('/route-transfers/commit',asyncHandler(async(req,res)=>{const {token}=valid(z.object({token:z.string().uuid()}).strict(),req.body);res.json({ok:true,data:await commitRouteTransfer(token,String(res.locals.user.id))});}));
+
+routeTransferRouter.post('/route-transfers/delete',asyncHandler(async(req,res)=>{const input=valid(z.object({requestId:z.string().uuid(),routes:z.array(z.object({id:z.string().min(1).max(40),version:z.number().int().min(0)}).strict()).min(1).max(2)}).strict().refine(v=>new Set(v.routes.map(r=>r.id)).size===v.routes.length,'Select different routes.'),req.body);res.json({ok:true,data:await deleteSelectedRoutes(input,String(res.locals.user.id))});}));
