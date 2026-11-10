@@ -1,3 +1,4 @@
+import {routeTransferRouter} from './route-transfer.routes.js';
 import {completionRepairRouter} from './completion-repair.routes.js';
 import {palletRouter,mobilePalletRouter} from './pallet.routes.js';
 import {customerTrackingRouter} from "./customer-tracking.routes.js";
@@ -31,6 +32,7 @@ apiRouter.use("/driver-mobile",driverMobileRouter);
 apiRouter.use(requireTrustedOrigin);
 apiRouter.use(authRouter);
 apiRouter.use(authMiddleware);
+apiRouter.use(routeTransferRouter);
 apiRouter.use(completionRepairRouter);
 apiRouter.use(palletRouter);
 
