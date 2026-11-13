@@ -1,3 +1,4 @@
+import {podMediaRouter} from './pod-media.routes.js';
 import {routeTransferRouter} from './route-transfer.routes.js';
 import {completionRepairRouter} from './completion-repair.routes.js';
 import {palletRouter,mobilePalletRouter} from './pallet.routes.js';
@@ -26,6 +27,7 @@ import { keyRouter } from "./key.routes.js";
 export const apiRouter = Router();
 
 apiRouter.use(healthRouter);
+apiRouter.use(podMediaRouter);
 apiRouter.use("/public-tracking",customerTrackingRouter);
 apiRouter.use("/driver-mobile/pallets",mobilePalletRouter);
 apiRouter.use("/driver-mobile",driverMobileRouter);
