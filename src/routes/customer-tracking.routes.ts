@@ -1,6 +1,8 @@
 import {Router} from 'express';
+import rateLimit from 'express-rate-limit';
 import {asyncHandler} from '../utils/async-handler.js';
 import {ApiError} from '../types/api.types.js';
+import {trackingPod} from '../services/tracking-pod.service.js';
 import {publicOrderTracking} from '../services/customer-tracking.service.js';
 
 export const customerTrackingRouter=Router();
@@ -30,4 +32,13 @@ customerTrackingRouter.post('/lookup',asyncHandler(async(req,res)=>{
  const token=req.body?.token;
  if(typeof token!=='string'||!/^[A-Za-z0-9_-]{43}$/.test(token))throw new ApiError(404,'TRACKING_UNAVAILABLE','This tracking link is unavailable or has expired.');
  res.json({ok:true,data:await publicOrderTracking(token)});
+}));
+
+// The token is sent in the body, never in a public download URL or query string.
+const podDownloadLimit=rateLimit({windowMs:60_000,limit:5,standardHeaders:'draft-7',legacyHeaders:false,message:{ok:false,error:{code:'POD_RATE_LIMIT',message:'Please wait a minute before downloading another POD.'}}});
+customerTrackingRouter.post('/pod',podDownloadLimit,asyncHandler(async(req,res)=>{
+ const token=req.body?.token;
+ if(typeof token!=='string'||!/^[A-Za-z0-9_-]{43}$/.test(token))throw new ApiError(404,'TRACKING_UNAVAILABLE','This tracking link is unavailable or has expired.');
+ const {pdf,filename}=await trackingPod(token);
+ res.set({'Content-Type':'application/pdf','Content-Disposition':`attachment; filename="${filename}"`});res.send(pdf);
 }));

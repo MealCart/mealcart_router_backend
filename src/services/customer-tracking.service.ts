@@ -87,7 +87,7 @@ function arrivalTime(value:unknown) {
 }
 
 /** Expose only this order and its currently assigned driver's eligible GPS point. */
-export async function publicOrderTracking(token:string,now=new Date()) {
+export async function trackingOrderForToken(token:string,now=new Date()) {
  if(!tokenPattern.test(token))throw unavailable();
  const link=(await pool.query(`SELECT *,delivery_date::text AS date FROM mealcart_customer_tracking_links
   WHERE token_hash=$1 AND revoked_at IS NULL AND expires_at>$2::timestamptz`,[tokenHash(token),now.toISOString()])).rows[0];
@@ -105,7 +105,13 @@ export async function publicOrderTracking(token:string,now=new Date()) {
   const references=(await pool.query('SELECT id FROM jobs WHERE do_number=$1 LIMIT 2',[link.do_number])).rows;
   if(references.length!==1||references[0].id!==link.job_id)throw unavailable();
  }
+ return {link,source,order};
+}
+
+export async function publicOrderTracking(token:string,now=new Date()) {
+ const {link,source,order}=await trackingOrderForToken(token,now);
  const base={
+  podAvailable:false,
   reference:link.do_number,
   serviceType:source==='collections'?'Collection':'Delivery',
   scheduledDate:link.date,
@@ -125,10 +131,10 @@ export async function publicOrderTracking(token:string,now=new Date()) {
    WHERE source_kind=$1 AND job_id=$2 AND delivery_date=$3 AND (do_number=$4 OR (do_number IS NULL AND source_kind='jobs'))
   LIMIT 2`,[source,link.job_id,link.date,link.do_number])).rows;
  const orderStatus=String(order.status??'').toLowerCase();
- if(['completed','failed','cancelled','canceled'].includes(orderStatus)||events.length){
+ if(['completed','delivered','failed','cancelled','canceled'].includes(orderStatus)||events.length){
   const status=['cancelled','canceled'].includes(orderStatus)?'cancelled':
-   events.some(event=>event.status==='completed')||orderStatus==='completed'?'completed':'failed';
-  return {...base,status,terminal:true,locationState:'hidden'};
+   events.some(event=>event.status==='completed')||['completed','delivered'].includes(orderStatus)?'completed':'failed';
+  return {...base,status,podAvailable:status==='completed'&&['completed','delivered'].includes(orderStatus),terminal:true,locationState:'hidden'};
  }
  const stops=(await pool.query(`SELECT p.driver_id,p.created_at,p.public_id,s.value AS stop,
    e.started_at,e.ended_at,e.eta_updated_at,d.status AS driver_status,
