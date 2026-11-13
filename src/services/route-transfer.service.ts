@@ -16,7 +16,7 @@ async function state(db:Db,ids:string[],additional:string[]=[]){
  const claimed=new Map<string,string>();for(const p of all)for(const id of stopIds(p)){if(claimed.has(id)&&claimed.get(id)!==p.public_id)throw error('This date has a stop on multiple saved routes. Resolve that duplicate first.');claimed.set(id,p.public_id);}
  const locked=new Map<string,any>();
  for(const p of plans){
-  const evidence=(await db.query(`SELECT stop_seq FROM mealcart_parcel_scans WHERE plan_id=$1 AND plan_created_at=$2::timestamptz UNION SELECT stop_seq FROM mealcart_delivery_completions WHERE plan_id=$1 AND plan_created_at=$2::timestamptz UNION SELECT stop_seq FROM mealcart_delivery_failures WHERE plan_id=$1 AND plan_created_at=$2::timestamptz`,[p.public_id,p.snapshot])).rows;
+  const evidence=(await db.query(`SELECT stop_seq FROM mealcart_parcel_scans WHERE plan_id=$1 AND plan_created_at=$2::timestamptz UNION SELECT stop_seq FROM mealcart_delivery_completions WHERE plan_id=$1 AND plan_created_at=$2::timestamptz UNION SELECT stop_seq FROM mealcart_collection_completions WHERE plan_id=$1 AND plan_created_at=$2::timestamptz UNION SELECT stop_seq FROM mealcart_delivery_failures WHERE plan_id=$1 AND plan_created_at=$2::timestamptz`,[p.public_id,p.snapshot])).rows;
   const seqs=new Set(evidence.map((s:any)=>s.stop_seq));for(const s of p.stop_arrivals)if(s.stopId!=='__DEPOT__'&&(s.status!=='Pending'||seqs.has(s.seq)))locked.set(s.stopId,{...s,owner:p.public_id});
  }
  const sources:Record<string,any>={};

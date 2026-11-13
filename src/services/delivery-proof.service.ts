@@ -1,4 +1,5 @@
 // Completion consistency repair v1
+import {collectionProofState,completeCollectionWithProof} from './collection-proof.service.js';
 import {repairRouteReceipt,canAttachMissingProof} from './completion-reconciliation.service.js';
 import type {PoolClient} from 'pg';
 import {pool} from '../db/pool.js';
@@ -19,6 +20,8 @@ async function context(c:PoolClient,driverId:string,planId:string,seq:number,loc
 function codes(job:any){try{return expectedBarcodes(job.barcodes);}catch(err){throw new ApiError(409,'BARCODES_NOT_CONFIGURED',(err as Error).message);}}
 async function scans(c:PoolClient,plan:any,seq:number,jobId:number,driverId:string){return(await c.query('SELECT barcode,scanned_at,driver_id FROM mealcart_parcel_scans WHERE plan_id=$1 AND plan_created_at=$2 AND stop_seq=$3 AND job_id=$4 AND driver_id=$5',[plan.public_id,plan.created_at,seq,jobId,driverId])).rows;}
 export async function parcelState(driverId:string,planId:string,seq:number){
+ const owned=(await pool.query("SELECT stop_arrivals FROM route_plans WHERE public_id=$1 AND driver_id=$2 AND status='Planned'",[planId,driverId])).rows[0];
+ if(owned?.stop_arrivals.find((s:any)=>s.seq===seq)?.stopId?.startsWith('STP-C'))return collectionProofState(driverId,planId,seq);
  return transaction(async c=>{const{plan,stop,index,job}=await context(c,driverId,planId,seq,true);
  const repaired=await repairRouteReceipt(c,plan,stop,index,job);
  const completion=(await c.query('SELECT id,photos,signature_url,completed_at FROM mealcart_delivery_completions WHERE plan_id=$1 AND plan_created_at=$2 AND stop_seq=$3',[planId,plan.created_at,seq])).rows[0];
@@ -40,6 +43,7 @@ export async function scanParcel(driverId:string,planId:string,seq:number,input:
  });return parcelState(driverId,planId,seq);
 }
 export async function completeWithProof(driverId:string,planId:string,seq:number,input:ProofInput,photos:Buffer[]){
+ if(input.stopId.startsWith('STP-C'))return completeCollectionWithProof(driverId,planId,seq,input,photos);
  const c=await pool.connect();let files:StoredMedia[]=[],committed=false;
  try{
   await c.query('BEGIN');const{plan,stop,index,job}=await context(c,driverId,planId,seq,true);

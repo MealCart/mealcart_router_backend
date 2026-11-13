@@ -38,7 +38,8 @@ export async function completeDriverStop(driverId:string,planId:string,seq:numbe
   const index=row.stop_arrivals.findIndex(s=>s.seq===seq&&s.stopId===stopId&&s.stopId!=='__DEPOT__');
   if(index<0)throw new ApiError(404,'STOP_NOT_FOUND','This order is not on the assigned route.');
   const stop=row.stop_arrivals[index];
-  if(/^STP-J/.test(stopId))throw new ApiError(409,'PROOF_REQUIRED','Scan every parcel, capture delivery photos and sign before completing this job.');
+  if(/^STP-C/.test(stopId))throw new ApiError(409,'COLLECTION_PROOF_REQUIRED','Update the driver app: collection photos and driver signature are required.');
+   if(/^STP-J/.test(stopId))throw new ApiError(409,'PROOF_REQUIRED','Scan every parcel, capture delivery photos and sign before completing this job.');
 
   if(offline && offline.planCreatedAt!==(row as any).plan_created_at)throw new ApiError(409,'OFFLINE_ROUTE_REPLACED','This route was replaced. Offline completion needs office review.');
   if(offline && stop.status==='Completed' && (stop as any).offlineRequestId!==offline.requestId)throw new ApiError(409,'ALREADY_COMPLETED','This stop was completed by a different request. Your local work is retained.');
