@@ -1,0 +1,7 @@
+const {PGlite}=require('@electric-sql/pglite');const fs=require('fs');const assert=require('node:assert/strict');
+(async()=>{const db=new PGlite();try{
+await db.exec(`CREATE TABLE drivers(public_id text PRIMARY KEY,name varchar(100));INSERT INTO drivers VALUES('DRV-1','Test Driver');CREATE TABLE mealcart_completed_delivery_events(completion_id uuid,plan_id varchar(50),plan_created_at timestamptz,stop_seq integer,job_id integer,do_number varchar(100),delivery_date date,driver_id varchar(50),driver_name varchar(100),completed_at timestamptz,source_kind text);`);
+const source=fs.readFileSync(require('node:path').join(__dirname,'../src/services/collection-proof.service.ts'),'utf8');const fixed=source.match(/await c.query\(`(INSERT INTO mealcart_completed_delivery_events[^`]+)`/)[1];const original=fixed.replaceAll('$8::text','$8');const params=['7840c047-6287-4ca0-b9e3-c521a36d1737','RP-0020','2026-11-13T00:00:00Z',1,45,'COL-53633084-872','2026-11-13','DRV-1','2026-11-13T13:45:34Z'];
+await assert.rejects(db.query(original,params),e=>e.code==='42P08');console.log('Original notification query reproduces PostgreSQL 42P08.');
+await db.query(fixed,params);const rows=(await db.query('SELECT driver_id,driver_name FROM mealcart_completed_delivery_events')).rows;assert.deepEqual(rows,[{driver_id:'DRV-1',driver_name:'Test Driver'}]);console.log('Fixed notification query inserts driver ID/name successfully.');
+}finally{await db.close();}})().catch(e=>{console.error(e);process.exitCode=1});
