@@ -1,3 +1,6 @@
+import {z} from 'zod';
+import {validateBody} from '../middleware/validate.middleware.js';
+import {reverseSavedRoute} from '../services/reverse-sequence.service.js';
 import { Router } from 'express';
 import { asyncHandler } from '../utils/async-handler.js';
 import { ApiError } from '../types/api.types.js';
@@ -18,4 +21,8 @@ routeManagementRouter.delete('/route-plans/:id/release',asyncHandler(async(req,r
  const version=Number(req.query.version);
  if(req.query.version===undefined||!Number.isInteger(version)||version<0)throw new ApiError(400,'INVALID_VERSION','Reload the route before deleting it.');
  res.json({ok:true,data:await manageRoute(String(req.params.id),version)});
+}));
+
+routeManagementRouter.post('/route-plans/:id/reverse-sequence',validateBody(z.object({version:z.number().int().positive(),requestId:z.string().uuid()}).strict()),asyncHandler(async(req,res)=>{
+ res.json({ok:true,data:await reverseSavedRoute(String(req.params.id),req.body.version,req.body.requestId,String(res.locals.user.id))});
 }));
